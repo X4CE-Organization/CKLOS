@@ -51,26 +51,7 @@ static void bitmap_mark_free(uint32_t page) {
 }
 
 static void paging_init(void) {
-    uint32_t *directory = (uint32_t *)0x00200000;
-
-    memset(directory, 0, PAGE_SIZE);
-    for (uint32_t index = 0; index < IDENTITY_MAP_BYTES / (4U * 1024U * 1024U); index++) {
-        directory[index] = index * 4U * 1024U * 1024U
-                         | PAGE_PRESENT | PAGE_WRITABLE | PAGE_4MB;
-    }
-
-    __asm__ volatile(
-        "mov %%cr4, %%eax\n"
-        "or $0x00000010, %%eax\n"
-        "mov %%eax, %%cr4\n"
-        "mov %0, %%cr3\n"
-        "mov %%cr0, %%eax\n"
-        "or $0x80000000, %%eax\n"
-        "mov %%eax, %%cr0\n"
-        :
-        : "r"(directory)
-        : "eax", "memory"
-    );
+    /* Long mode page tables are installed by the bootloader. */
 }
 
 void memory_init(const boot_info *info) {
@@ -81,7 +62,7 @@ void memory_init(const boot_info *info) {
     memset(page_bitmap, 0xFF, sizeof(page_bitmap));
     if (info && info->magic == BOOT_INFO_MAGIC && info->entry_count) {
         entry_count = info->entry_count > 64 ? 64 : info->entry_count;
-        entries = (const e820_entry *)info->map_address;
+        entries = (const e820_entry *)(uintptr_t)info->map_address;
         for (uint32_t index = 0; index < entry_count; index++) {
             if (entries[index].type != 1) {
                 continue;
@@ -173,7 +154,7 @@ void *page_alloc(void) {
          page < usable_top / PAGE_SIZE; page++) {
         if (!bitmap_page_used(page)) {
             bitmap_mark_used(page);
-            void *address = (void *)(page * PAGE_SIZE);
+            void *address = (void *)(uintptr_t)(page * PAGE_SIZE);
             memset(address, 0, PAGE_SIZE);
             return address;
         }
@@ -182,7 +163,7 @@ void *page_alloc(void) {
 }
 
 bool page_free_address(void *address) {
-    uint32_t value = (uint32_t)address;
+    uintptr_t value = (uintptr_t)address;
     if (!value || value < PAGE_ALLOC_START || value >= usable_top || value & (PAGE_SIZE - 1)) {
         return false;
     }

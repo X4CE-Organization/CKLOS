@@ -2,6 +2,16 @@
 
 All notable changes to CKLOS are documented here.
 
+## 0.6.0 — 2026-10-25
+
+### Added
+
+- x86-64 long-mode boot path with identity page tables and 64-bit kernel ABI.
+- 64-bit IDT, interrupt frames, task stacks and context switching.
+- PS/2 IRQ12 mouse driver with a visible software cursor.
+- Clickable SYS, NET and CLR controls plus graphical information panels.
+- QEMU `show-cursor` launch option so clicking the window does not hide the pointer.
+
 ## 0.5.0 — 2026-10-25
 
 ### Added

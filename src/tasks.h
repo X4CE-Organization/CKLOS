@@ -12,7 +12,7 @@ typedef enum {
 typedef struct {
     char name[16];
     task_state state;
-    uint32_t saved_esp;
+    uint64_t saved_rsp;
     void *stack;
     uint32_t stack_size;
     uint32_t yields;

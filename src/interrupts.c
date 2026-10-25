@@ -2,6 +2,7 @@
 #include "interrupts.h"
 #include "io.h"
 #include "keyboard.h"
+#include "mouse.h"
 #include "network.h"
 #include "string.h"
 #include "tasks.h"
@@ -11,33 +12,31 @@
 typedef struct {
     uint16_t offset_low;
     uint16_t selector;
-    uint8_t reserved;
+    uint8_t ist;
     uint8_t flags;
     uint16_t offset_high;
+    uint32_t offset_top;
+    uint32_t reserved;
 } __attribute__((packed)) idt_gate;
 
 typedef struct {
     uint16_t limit;
-    uint32_t base;
+    uint64_t base;
 } __attribute__((packed)) idt_pointer;
 
 typedef struct {
-    uint32_t edi;
-    uint32_t esi;
-    uint32_t ebp;
-    uint32_t esp;
-    uint32_t ebx;
-    uint32_t edx;
-    uint32_t ecx;
-    uint32_t eax;
-    uint32_t vector;
-    uint32_t error;
-    uint32_t eip;
-    uint32_t cs;
-    uint32_t eflags;
+    uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
+    uint64_t rbp, rdi, rsi, rdx, rcx, rbx, rax;
+    uint64_t vector;
+    uint64_t error;
+    uint64_t rip;
+    uint64_t cs;
+    uint64_t rflags;
+    uint64_t rsp;
+    uint64_t ss;
 } interrupt_frame;
 
-extern const uint32_t interrupt_stubs[48];
+extern const uint64_t interrupt_stubs[48];
 
 static idt_gate idt[IDT_ENTRIES];
 static idt_pointer idt_descriptor;
@@ -55,12 +54,14 @@ static const char *exception_names[32] = {
     "Hypervisor injection", "VMM communication", "Security", "Reserved exception"
 };
 
-static void idt_set_gate(uint32_t vector, uint32_t handler) {
+static void idt_set_gate(uint32_t vector, uint64_t handler) {
     idt[vector].offset_low = (uint16_t)(handler & 0xFFFF);
     idt[vector].selector = 0x08;
-    idt[vector].reserved = 0;
+    idt[vector].ist = 0;
     idt[vector].flags = 0x8E;
     idt[vector].offset_high = (uint16_t)(handler >> 16);
+    idt[vector].offset_top = (uint32_t)(handler >> 32);
+    idt[vector].reserved = 0;
 }
 
 static void pic_remap(void) {
@@ -82,8 +83,8 @@ static void pic_remap(void) {
     io_wait();
 
     /* Enable the PIT and PS/2 keyboard IRQs. */
-    outb(0x21, 0xFC);
-    outb(0xA1, 0xFF);
+    outb(0x21, 0xF8);
+    outb(0xA1, 0xEF);
 }
 
 static void pit_init(void) {
@@ -99,14 +100,13 @@ void interrupt_dispatch(interrupt_frame *frame) {
             timer_tick();
         } else if (frame->vector == 33) {
             keyboard_irq_handler();
+        } else if (frame->vector == 44) {
+            mouse_irq_handler();
         }
         if (frame->vector >= 40) {
             outb(0xA0, 0x20);
         }
         outb(0x20, 0x20);
-        if (frame->vector == 32) {
-            tasks_preempt();
-        }
         return;
     }
 
@@ -117,8 +117,9 @@ void interrupt_dispatch(interrupt_frame *frame) {
     } else {
         console_write("unknown interrupt");
     }
-    console_printf("\n  Vector: %u  Error: 0x%08x  EIP: 0x%08x\n",
-                   frame->vector, frame->error, frame->eip);
+    console_printf("\n  Vector: %u  Error: 0x%08x  RIP: 0x%08x\n",
+                   (uint32_t)frame->vector, (uint32_t)frame->error,
+                   (uint32_t)frame->rip);
     console_write("  System halted to protect kernel state.\n");
     cpu_halt();
 }
@@ -150,7 +151,7 @@ void interrupts_init(void) {
         idt_set_gate(vector, interrupt_stubs[vector]);
     }
     idt_descriptor.limit = sizeof(idt) - 1;
-    idt_descriptor.base = (uint32_t)idt;
+    idt_descriptor.base = (uint64_t)idt;
 
     __asm__ volatile("lidt %0" : : "m"(idt_descriptor));
     pic_remap();

@@ -1,4 +1,5 @@
 #include "io.h"
+#include "gui.h"
 #include "keyboard.h"
 #include "network.h"
 #include "serial.h"
@@ -150,6 +151,7 @@ uint16_t input_getchar(void) {
             return character;
         }
         network_poll();
+        gui_tick();
         task_yield();
         cpu_pause();
     }

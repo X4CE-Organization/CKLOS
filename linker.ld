@@ -1,4 +1,4 @@
-OUTPUT_FORMAT(elf32-i386)
+OUTPUT_FORMAT(elf64-x86-64)
 ENTRY(kernel_entry)
 
 SECTIONS
@@ -14,17 +14,20 @@ SECTIONS
     .rodata : ALIGN(16)
     {
         *(.rodata*)
+        *(.lrodata*)
     }
 
     .data : ALIGN(16)
     {
         *(.data*)
+        *(.ldata*)
     }
 
     .bss : ALIGN(16)
     {
         __bss_start = .;
         *(.bss*)
+        *(.lbss*)
         *(COMMON)
         __bss_end = .;
     }

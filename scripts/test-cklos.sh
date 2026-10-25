@@ -6,10 +6,10 @@ IMAGE="$ROOT/build/cklos.img"
 DATA_IMAGE="$ROOT/build/cklos-data.img"
 LOG="$ROOT/build/qemu-test.log"
 PERSIST_LOG="$ROOT/build/qemu-persist-test.log"
-QEMU=${QEMU:-$(command -v qemu-system-i386 2>/dev/null || true)}
+QEMU=${QEMU:-$(command -v qemu-system-x86_64 2>/dev/null || true)}
 
 if [ -z "$QEMU" ]; then
-    echo "qemu-system-i386 is required. Run: brew install qemu" >&2
+    echo "qemu-system-x86_64 is required. Run: brew install qemu" >&2
     exit 1
 fi
 
@@ -68,6 +68,7 @@ set +e
     sleep 1
 } | "$QEMU" \
     -m 64M \
+    -cpu max \
     -drive "file=$IMAGE,format=raw,if=floppy" \
     -boot a \
     -drive "file=$DATA_IMAGE,format=raw,if=ide,index=0" \
@@ -89,9 +90,9 @@ if [ "$status" -ne 33 ] && [ "$status" -ne 0 ]; then
 fi
 
 for expected in \
-    'CKLOS 0.5.0 kernel is running' \
+    'CKLOS 0.6.0 kernel is running' \
     'CKLOS>' \
-    'OS        CKLOS 0.5.0' \
+    'OS        CKLOS 0.6.0' \
     'PIT 100 Hz' \
     'Uptime' \
     'Heap allocator: PASS' \
@@ -136,6 +137,7 @@ set +e
     sleep 1
 } | "$QEMU" \
     -m 64M \
+    -cpu max \
     -drive "file=$IMAGE,format=raw,if=floppy" \
     -boot a \
     -drive "file=$DATA_IMAGE,format=raw,if=ide,index=0" \

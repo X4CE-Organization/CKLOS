@@ -28,7 +28,7 @@
 ## 0.7 — Graphics foundation
 
 - [x] Framebuffer console and windowed terminal
-- [ ] Mouse cursor and event queue
+- [x] Mouse cursor and clickable GUI controls
 - [ ] Double-buffered 2D drawing API
 - [ ] Font and image loading
 - [ ] Compositor and window model

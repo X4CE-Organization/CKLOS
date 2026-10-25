@@ -6,7 +6,7 @@
 #define TASK_LIMIT 8
 #define TASK_STACK_SIZE 16384
 
-extern void task_switch(uint32_t *old_esp, uint32_t new_esp);
+extern void task_switch(uint64_t *old_rsp, uint64_t new_rsp);
 
 static kernel_task tasks[TASK_LIMIT];
 static uint32_t total_tasks;
@@ -50,18 +50,17 @@ static bool add_task(const char *name, void (*entry)(void)) {
     if (!stack) {
         return false;
     }
-    uint32_t top = ((uint32_t)stack + TASK_STACK_SIZE) & ~0x0FU;
-    uint32_t *esp = (uint32_t *)(top - 20);
-    esp[0] = 0;
-    esp[1] = 0;
-    esp[2] = 0;
-    esp[3] = 0;
-    esp[4] = (uint32_t)task_bootstrap;
+    uint64_t top = ((uint64_t)stack + TASK_STACK_SIZE) & ~0x0FULL;
+    uint64_t *rsp = (uint64_t *)(top - 64);
+    for (uint32_t index = 0; index < 6; index++) {
+        rsp[index] = 0;
+    }
+    rsp[6] = (uint64_t)task_bootstrap;
 
     memset(&tasks[slot], 0, sizeof(tasks[slot]));
     strcpy(tasks[slot].name, name);
     tasks[slot].state = TASK_READY;
-    tasks[slot].saved_esp = (uint32_t)esp;
+    tasks[slot].saved_rsp = (uint64_t)rsp;
     tasks[slot].stack = stack;
     tasks[slot].stack_size = TASK_STACK_SIZE;
     tasks[slot].entry = entry;
@@ -111,7 +110,7 @@ void task_yield(void) {
     tasks[next].state = TASK_RUNNING;
     current_task = next;
     switch_count++;
-    task_switch(&old_task->saved_esp, tasks[next].saved_esp);
+    task_switch(&old_task->saved_rsp, tasks[next].saved_rsp);
     __asm__ volatile("sti");
 }
 
@@ -138,7 +137,7 @@ void tasks_preempt(void) {
     tasks[next].state = TASK_RUNNING;
     current_task = next;
     switch_count++;
-    task_switch(&old_task->saved_esp, tasks[next].saved_esp);
+    task_switch(&old_task->saved_rsp, tasks[next].saved_rsp);
 }
 
 int tasks_spawn(const char *kind) {
@@ -177,7 +176,7 @@ int tasks_stop(uint32_t id) {
         kfree(task->stack);
         task->stack = 0;
         task->stack_size = 0;
-        task->saved_esp = 0;
+        task->saved_rsp = 0;
         task->entry = 0;
     }
     return 0;

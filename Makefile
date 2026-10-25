@@ -4,7 +4,7 @@ SHELL := /bin/sh
 BUILD := build
 IMAGE := $(BUILD)/cklos.img
 DATA_IMAGE := $(BUILD)/cklos-data.img
-KERNEL_MAX_BYTES := 51200
+KERNEL_MAX_BYTES := 65024
 VERSION := $(shell grep 'CKLOS_VERSION "' src/version.h | cut -d '"' -f2)
 
 NASM ?= $(shell command -v nasm 2>/dev/null)
@@ -19,26 +19,27 @@ OBJCOPY ?= $(shell if [ -x "$(LLVM_PREFIX)/bin/llvm-objcopy" ]; then \
 	echo "$(LLVM_PREFIX)/bin/llvm-objcopy"; \
 	elif command -v llvm-objcopy >/dev/null 2>&1; then command -v llvm-objcopy; \
 	else command -v objcopy 2>/dev/null; fi)
-QEMU ?= $(shell command -v qemu-system-i386 2>/dev/null)
+QEMU ?= $(shell command -v qemu-system-x86_64 2>/dev/null)
 HOST_OS := $(shell uname -s)
 ifeq ($(HOST_OS),Darwin)
-QEMU_RUN_DISPLAY ?= cocoa,zoom-to-fit=on
+QEMU_RUN_DISPLAY ?= cocoa,zoom-to-fit=on,show-cursor=on
 endif
 QEMU_DISPLAY_ARG := $(if $(QEMU_RUN_DISPLAY),-display $(QEMU_RUN_DISPLAY))
 HOST_SSH_PORT ?= 2222
 NETWORK_ARGS := -netdev user,id=net0,hostfwd=tcp:127.0.0.1:$(HOST_SSH_PORT)-:22 \
 	-device rtl8139,netdev=net0,mac=52:54:00:12:34:56
 
-CFLAGS := --target=i386-none-elf -m32 -std=c11 -O2 -Wall -Wextra -Werror \
+CFLAGS := --target=x86_64-none-elf -m64 -std=c11 -O2 -Wall -Wextra -Werror \
 	-ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
 	-fno-asynchronous-unwind-tables -fno-unwind-tables -mno-sse -mno-sse2 \
-	-mno-mmx -mno-80387 -nostdlib -MMD -MP \
+	-mno-mmx -mno-80387 -mno-red-zone -mcmodel=large -nostdlib -MMD -MP \
 	-Isrc -I$(BUILD) \
 	-Ithird_party/font8x8 \
 	-Ithird_party/monocypher/src -Ithird_party/monocypher/src/optional \
 	-Ithird_party/bearssl/inc -Ithird_party/bearssl/src
-NASMFLAGS := -f elf32 -Wall -Werror -w-reloc-abs-dword -w-reloc-rel-dword
-CRYPTO_CFLAGS := --target=i386-none-elf -m32 -std=c11 -O2 \
+NASMFLAGS := -f elf64 -Wall -Werror -w-reloc-abs-dword -w-reloc-rel-dword \
+	-w-reloc-abs-qword
+CRYPTO_CFLAGS := --target=x86_64-none-elf -m64 -std=c11 -O2 \
 	-ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
 	-fno-asynchronous-unwind-tables -fno-unwind-tables -fno-common \
 	-ffunction-sections -fdata-sections \
@@ -48,7 +49,7 @@ CRYPTO_CFLAGS := --target=i386-none-elf -m32 -std=c11 -O2 \
 
 C_SOURCES := src/kernel.c src/console.c src/serial.c src/keyboard.c \
 	src/string.c src/memory.c src/vfs.c src/disk.c src/interrupts.c \
-	src/network.c src/gui.c src/tasks.c src/shell.c
+	src/network.c src/gui.c src/mouse.c src/tasks.c src/shell.c
 C_OBJECTS := $(patsubst src/%.c,$(BUILD)/%.o,$(C_SOURCES))
 VENDOR_SOURCES := \
 	third_party/monocypher/src/monocypher.c \
@@ -118,7 +119,7 @@ $(BUILD)/vendor/%.o: %.c | crypto $(BUILD)
 	$(CLANG) $(CRYPTO_CFLAGS) -c $< -o $@
 
 $(BUILD)/kernel.elf: $(OBJECTS) linker.ld
-	$(LD_LLD) -m elf_i386 -T linker.ld --build-id=none --gc-sections \
+	$(LD_LLD) -m elf_x86_64 -T linker.ld --build-id=none --gc-sections \
 		-o $@ $(OBJECTS)
 
 $(BUILD)/kernel.bin: $(BUILD)/kernel.elf
@@ -142,6 +143,7 @@ run: image
 	@test -n "$(QEMU)" || (echo "Install QEMU: brew install qemu" >&2; exit 1)
 	@status=0; \
 	$(QEMU) -m 64M -drive file=$(IMAGE),format=raw,if=floppy -boot a \
+		-cpu max \
 		-drive file=$(DATA_IMAGE),format=raw,if=ide,index=0 \
 		$(NETWORK_ARGS) \
 		$(QEMU_DISPLAY_ARG) -serial stdio -monitor none \
@@ -152,6 +154,7 @@ term: image
 	@test -n "$(QEMU)" || (echo "Install QEMU: brew install qemu" >&2; exit 1)
 	@status=0; \
 	$(QEMU) -m 64M -drive file=$(IMAGE),format=raw,if=floppy -boot a \
+		-cpu max \
 		-drive file=$(DATA_IMAGE),format=raw,if=ide,index=0 \
 		$(NETWORK_ARGS) \
 		-display none -serial stdio -monitor none -device isa-debug-exit || status=$$?; \

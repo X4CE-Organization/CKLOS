@@ -4,6 +4,7 @@
 #include "io.h"
 #include "keyboard.h"
 #include "memory.h"
+#include "mouse.h"
 #include "network.h"
 #include "shell.h"
 #include "string.h"
@@ -98,7 +99,7 @@ static void print_banner(void) {
         "\n"
     );
     console_set_color(COLOR_LIGHT_GRAY, COLOR_BLACK);
-    console_write("  " CKLOS_NAME " " CKLOS_VERSION "  |  32-bit x86 command line\n");
+    console_write("  " CKLOS_NAME " " CKLOS_VERSION "  |  x86-64 graphical terminal\n");
     console_write("  Type HELP for commands, ABOUT for details.\n\n");
 }
 
@@ -143,12 +144,12 @@ static void command_help(void) {
 static void command_about(void) {
     console_write(
         CKLOS_NAME " " CKLOS_VERSION "\n"
-        "A freestanding command-line operating system for 32-bit x86.\n"
+        "A freestanding graphical operating system for x86-64.\n"
         "Boot path: BIOS -> CKLOS bootloader -> protected-mode kernel -> CKLOS Shell.\n"
         "Core: flat GDT, IDT exception gates, 8259 PIC, 100 Hz PIT timer.\n"
         "Devices: VGA text, COM1 serial, PS/2 keyboard, CMOS RTC, PC speaker.\n"
         "Memory: identity paging, page allocator and a 1 MiB kernel heap.\n"
-        "Tasks: preemptive round-robin kernel scheduler.\n"
+        "Tasks: cooperative x86-64 kernel scheduler.\n"
         "Storage: writable RAM disk plus persistent ATA data disk.\n"
         "The kernel is compiled from C and assembly with no host runtime.\n"
     );
@@ -186,7 +187,7 @@ static void command_sysinfo(void) {
     vendor[12] = '\0';
 
     console_write("OS        " CKLOS_NAME " " CKLOS_VERSION "\n");
-    console_write("Arch      x86 32-bit protected mode\n");
+    console_write("Arch      x86-64 long mode\n");
     console_printf("CPU       %s\n", vendor);
     console_printf("CPUID     max leaf %u\n", eax);
     console_write("Kernel    loaded at 0x00010000\n");
@@ -198,7 +199,8 @@ static void command_sysinfo(void) {
     console_printf("Heap      %u / %u bytes used\n", heap_used(), heap_total());
     console_printf("Tasks     %u, %u context switches\n", task_count(), task_switches());
     console_printf("Network   RTL8139 %s\n", network_available() ? "online" : "offline");
-    console_write("Interrupt IDT, PIC 0x20, PIT 100 Hz, preemptive scheduler\n");
+    console_printf("Pointer   PS/2 mouse %s\n", mouse_available() ? "online" : "offline");
+    console_write("Interrupt IDT, PIC 0x20, PIT 100 Hz, PS/2 mouse IRQ12\n");
     console_printf("Timer     %u ticks\n", timer_ticks());
     console_write("Display   VGA mode 13h 320x200 GUI + COM1 serial\n");
     print_cpu_feature("FPU       ", 1U << 0);
@@ -318,6 +320,12 @@ static void command_net(void) {
                    network_tcp_last_write_state(), network_tcp_segment_failure(),
                    network_ipv4_send_failure());
     console_write("SSH       not enabled until authenticated SSH-2 is ready\n");
+}
+
+static void command_mouse(void) {
+    console_printf("PS/2 mouse: %s\nX: %d  Y: %d  Left: %s\n",
+                   mouse_available() ? "online" : "offline",
+                   mouse_x(), mouse_y(), mouse_left_down() ? "down" : "up");
 }
 
 static void command_ping(int argc) {
@@ -1069,6 +1077,8 @@ static void run_command(int argc) {
         command_mem();
     } else if (strcmp(arguments[0], "net") == 0) {
         command_net();
+    } else if (strcmp(arguments[0], "mouse") == 0) {
+        command_mouse();
     } else if (strcmp(arguments[0], "ping") == 0) {
         command_ping(argc);
     } else if (strcmp(arguments[0], "tcptest") == 0) {

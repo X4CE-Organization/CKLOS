@@ -1,25 +1,24 @@
-; Cooperative x86 task context switch.
-; void task_switch(uint32_t *old_esp, uint32_t new_esp);
-
-bits 32
+bits 64
 section .text
 global task_switch
 
 task_switch:
-    push ebp
-    push ebx
-    push esi
-    push edi
+    push rbp
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
 
-    mov eax, [esp + 20]
-    mov edx, [esp + 24]
-    mov [eax], esp
-    mov esp, edx
+    mov [rdi], rsp
+    mov rsp, rsi
 
-    pop edi
-    pop esi
-    pop ebx
-    pop ebp
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    pop rbp
     ret
 
 section .note.GNU-stack noalloc noexec nowrite progbits

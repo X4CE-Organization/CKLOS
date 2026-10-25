@@ -1,6 +1,4 @@
-; 32-bit CKLOS entry point. The bootloader jumps here with flat segments.
-
-bits 32
+bits 64
 section .text.entry
 global kernel_entry
 extern kernel_main
@@ -9,19 +7,18 @@ extern __bss_end
 
 kernel_entry:
     cli
-    mov esp, 0x90000
-    xor ebp, ebp
-
+    mov rsp, 0x90000
+    xor rbp, rbp
     cld
-    mov edi, __bss_start
-    mov ecx, __bss_end
-    sub ecx, edi
+
+    mov rdi, __bss_start
+    mov rcx, __bss_end
+    sub rcx, rdi
     xor eax, eax
     rep stosb
 
-    push dword 0
+    xor edi, edi
     call kernel_main
-    add esp, 4
 
 .halt:
     cli

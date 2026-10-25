@@ -203,7 +203,7 @@ static bool rtl_send(const uint8_t *packet, uint32_t length) {
     uint8_t index = tx_round_robin++ & 3;
     uint16_t status_port = RTL_TSD0 + index * 4;
     memcpy(tx_buffers[index], packet, length);
-    rtl_write32(RTL_TSAD0 + index * 4, (uint32_t)tx_buffers[index]);
+    rtl_write32(RTL_TSAD0 + index * 4, (uint32_t)(uintptr_t)tx_buffers[index]);
     rtl_write32(status_port, length & 0x1FFF);
     for (uint32_t timeout = 0; timeout < 1000000; timeout++) {
         last_tx_status = rtl_read32(status_port);
@@ -657,7 +657,7 @@ void network_init(void) {
     for (uint32_t index = 0; index < 6; index++) {
         local_mac[index] = inb(io_base + RTL_IDR0 + index);
     }
-    rtl_write32(RTL_RBSTART, (uint32_t)rx_buffer);
+    rtl_write32(RTL_RBSTART, (uint32_t)(uintptr_t)rx_buffer);
     for (uint32_t index = 0; index < 4; index++) {
         rtl_write32(RTL_TSD0 + index * 4, 0);
     }

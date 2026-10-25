@@ -1,24 +1,21 @@
-; Low-level interrupt entry points for CKLOS.
-
-bits 32
+bits 64
 section .text
 
 extern interrupt_dispatch
-
 global interrupt_stubs
 
 %macro ISR_NO_ERROR 1
 isr%1:
     cli
-    push dword 0
-    push dword %1
+    push qword 0
+    push qword %1
     jmp isr_common
 %endmacro
 
 %macro ISR_ERROR_CODE 1
 isr%1:
     cli
-    push dword %1
+    push qword %1
     jmp isr_common
 %endmacro
 
@@ -62,22 +59,49 @@ ISR_NO_ERROR vector
 %endrep
 
 isr_common:
-    pushad
-    push esp
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push rbp
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+    mov rdi, rsp
     call interrupt_dispatch
-    add esp, 4
-    popad
-    add esp, 8
-    iretd
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rbp
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+    add rsp, 16
+    iretq
 
 section .rodata
-align 4
+align 8
 interrupt_stubs:
-    dd isr0, isr1, isr2, isr3, isr4, isr5, isr6, isr7
-    dd isr8, isr9, isr10, isr11, isr12, isr13, isr14, isr15
-    dd isr16, isr17, isr18, isr19, isr20, isr21, isr22, isr23
-    dd isr24, isr25, isr26, isr27, isr28, isr29, isr30, isr31
-    dd isr32, isr33, isr34, isr35, isr36, isr37, isr38, isr39
-    dd isr40, isr41, isr42, isr43, isr44, isr45, isr46, isr47
+    dq isr0, isr1, isr2, isr3, isr4, isr5, isr6, isr7
+    dq isr8, isr9, isr10, isr11, isr12, isr13, isr14, isr15
+    dq isr16, isr17, isr18, isr19, isr20, isr21, isr22, isr23
+    dq isr24, isr25, isr26, isr27, isr28, isr29, isr30, isr31
+    dq isr32, isr33, isr34, isr35, isr36, isr37, isr38, isr39
+    dq isr40, isr41, isr42, isr43, isr44, isr45, isr46, isr47
 
 section .note.GNU-stack noalloc noexec nowrite progbits

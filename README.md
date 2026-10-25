@@ -1,11 +1,11 @@
 # CKLOS
 
-CKLOS 是一个独立启动的 32 位 x86 命令行操作系统。它不运行在 Linux、macOS 或 DOS 之上，也不依赖宿主系统运行时。
+CKLOS 是一个独立启动的 x86-64 图形操作系统。它不运行在 Linux、macOS 或 DOS 之上，也不依赖宿主系统运行时。
 
 启动链路：
 
 ```text
-BIOS -> CKLOS 自写引导扇区 -> 32 位保护模式 -> C 内核 -> CKLOS Shell
+BIOS -> CKLOS 自写引导扇区 -> x86-64 长模式 -> C 内核 -> CKLOS GUI
 ```
 
 项目文件夹和系统中的正式名称统一为 `CKLOS`。
@@ -13,13 +13,13 @@ BIOS -> CKLOS 自写引导扇区 -> 32 位保护模式 -> C 内核 -> CKLOS Shel
 ## 已实现功能
 
 - 1.44 MB 自启动软盘镜像和自有 x86 引导程序
-- 32 位保护模式内核，不使用宿主标准库或运行时
+- x86-64 长模式内核，不使用宿主标准库或运行时
 - 256 项 IDT、8259 PIC 中断重映射和 100 Hz PIT 定时器
 - CPU 异常捕获，可显示异常类型、错误码和故障地址
-- BIOS E820 物理内存探测、64 MiB 恒等分页、页帧分配器和 1 MiB 内核堆
-- 基于 PIT 的抢占式轮转任务调度，最多同时管理 8 个内核任务
+- 64 MiB 恒等分页、页帧分配器和 1 MiB 内核堆
+- 基于 PIT 的轮转任务调度，最多同时管理 8 个内核任务
 - 可停止并回收栈资源的用户内核任务
-- VGA mode 13h 320×200 图形帧缓冲、窗口式终端、COM1 串口和中断驱动 PS/2 键盘
+- VGA mode 13h 320×200 图形帧缓冲、窗口式终端、COM1 串口、PS/2 键盘和 PS/2 鼠标
 - 命令历史、上下方向键调用、Ctrl+L 清屏和 Ctrl+C 取消
 - `.CKL` 文本命令脚本、文件复制、内容统计和首尾行查看
 - 可写 12 KiB 内存文件系统，内置只读系统文件
@@ -27,7 +27,7 @@ BIOS -> CKLOS 自写引导扇区 -> 32 位保护模式 -> C 内核 -> CKLOS Shel
 - CMOS 实时时钟、CPU 信息、内存布局和设备诊断
 - 整数计算、十六进制查看、颜色主题和 PC 扬声器测试
 
-这是 CKLOS 0.5.0 的开源图形内核版本。它已经有真正的分页、抢占式调度、持久化存储、RTL8139 网络和图形终端，但还不是 Linux 那样的完整通用操作系统：用户态隔离、POSIX 系统调用、完整驱动模型、SSH、USB 和完整桌面尚未实现。
+这是 CKLOS 0.6.0 的开源 x86-64 图形内核版本。它已经有长模式、分页、任务切换、持久化存储、RTL8139 网络、图形终端和可操作鼠标，但还不是 Linux 那样的完整通用操作系统：用户态隔离、POSIX 系统调用、完整驱动模型、SSH、USB 和完整桌面尚未实现。
 
 ## 安装依赖
 
@@ -47,7 +47,7 @@ make
 make run
 ```
 
-`make run` 会在 macOS 上打开启用 `zoom-to-fit` 的可缩放 QEMU 窗口，并在当前终端中同步显示串口输出。系统进入 320×200 图形模式：顶部是 CKLOS 标题栏，中间是窗口式命令行，底部显示快捷键和端口状态。
+`make run` 会在 macOS 上打开启用 `zoom-to-fit` 和 `show-cursor` 的 QEMU 窗口，并在当前终端中同步显示串口输出。系统进入 320×200 图形模式：点击窗口后移动鼠标，CKLOS 会显示并移动自己的 PS/2 软件光标。顶部 `SYS`、`NET`、`CLR` 按钮可以直接点击。
 
 默认 SSH 主机转发端口为 `2222`。如果该端口已被占用，可以改用其他端口：
 
@@ -87,7 +87,7 @@ make test
 | `heap` | 查看 1 MiB 内核堆使用情况 |
 | `memtest` | 实测内核堆和物理页分配器 |
 | `tasks` | 查看任务、状态、让出次数和工作计数 |
-| `spawn worker` / `spawn idle` | 创建抢占式内核任务 |
+| `spawn worker` / `spawn idle` | 创建协作式内核任务 |
 | `kill ID` / `killall` | 停止用户内核任务并回收任务栈 |
 | `history` | 查看命令历史 |
 | `history -c` | 清空命令历史 |
@@ -135,15 +135,16 @@ CKLOS 使用 [MIT License](LICENSE)，允许使用、修改、分发和商业集
 
 ```text
 src/boot.asm            实模式引导扇区和保护模式切换
-src/entry.asm           32 位内核入口和 BSS 初始化
+src/entry.asm           x86-64 内核入口和 BSS 初始化
 src/interrupt_stubs.asm 异常与硬件中断入口
 src/interrupts.c        IDT、PIC、PIT 和异常处理
 src/memory.c            E820 内存、分页、页帧分配器和内核堆
-src/tasks.c             抢占式轮转任务调度器
+src/tasks.c             协作式轮转任务调度器
 src/task_switch.asm     任务上下文切换
 src/disk.c              ATA PIO 驱动与 CKLOSFS1 持久化
 src/kernel.c            内核初始化
-src/gui.c               VGA mode 13h 帧缓冲、窗口和位图字体
+src/gui.c               VGA 帧缓冲、窗口、按钮、面板和软件光标
+src/mouse.c             PS/2 鼠标 IRQ12 驱动
 src/console.c           图形与串口终端路由
 src/keyboard.c          PS/2、串口输入和历史按键
 src/vfs.c               可写内存文件系统

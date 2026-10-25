@@ -1,4 +1,5 @@
 #include "gui.h"
+#include "mouse.h"
 #include "serial.h"
 #include "string.h"
 
@@ -21,6 +22,11 @@ static uint8_t foreground = 7;
 static uint8_t background = 0;
 static uint32_t row;
 static uint32_t column;
+static int32_t cursor_x = 160;
+static int32_t cursor_y = 100;
+static uint8_t cursor_background[16 * 16];
+static bool cursor_saved;
+static uint8_t active_panel;
 
 static void pixel(uint32_t x, uint32_t y, uint8_t color) {
     if (x < GUI_WIDTH && y < GUI_HEIGHT) {
@@ -56,17 +62,111 @@ static void chrome(void) {
     fill(0, 0, GUI_WIDTH, GUI_HEIGHT, 8);
     fill(0, 0, GUI_WIDTH, 16, 1);
     text_at(6, 4, "CKLOS", 15);
-    text_at(58, 4, "GRAPHICAL TERMINAL", 11);
-    text_at(244, 4, "320x200", 14);
+    fill(58, 3, 34, 11, 11);
+    text_at(64, 5, "SYS", 0);
+    fill(96, 3, 34, 11, 10);
+    text_at(102, 5, "NET", 0);
+    fill(134, 3, 34, 11, 12);
+    text_at(140, 5, "CLR", 0);
+    text_at(248, 4, "AMD64", 14);
 
+    fill(WINDOW_X + 4, WINDOW_Y + 6, WINDOW_WIDTH, WINDOW_HEIGHT, 0);
     fill(WINDOW_X, WINDOW_Y, WINDOW_WIDTH, WINDOW_HEIGHT, 7);
     fill(WINDOW_X + 2, WINDOW_Y + 2, WINDOW_WIDTH - 4, WINDOW_HEIGHT - 4, 0);
     fill(WINDOW_X + 4, WINDOW_Y + 4, WINDOW_WIDTH - 8, 14, 3);
-    text_at(WINDOW_X + 8, WINDOW_Y + 7, "CKLOS Terminal", 0);
+    text_at(WINDOW_X + 8, WINDOW_Y + 7, "CKLOS Terminal - 64-bit", 0);
     text_at(WINDOW_X + 278, WINDOW_Y + 7, "_ [] X", 8);
 
     fill(0, STATUS_Y, GUI_WIDTH, GUI_HEIGHT - STATUS_Y, 7);
-    text_at(5, STATUS_Y + 3, "F1 HELP   CTRL+L CLEAR   PORT 22", 0);
+    text_at(5, STATUS_Y + 3, "MOUSE READY   PORT 22   CTRL+L", 0);
+}
+
+static void cursor_hide(void) {
+    if (!cursor_saved) {
+        return;
+    }
+    for (uint32_t y = 0; y < 16; y++) {
+        for (uint32_t x = 0; x < 16; x++) {
+            pixel((uint32_t)cursor_x + x, (uint32_t)cursor_y + y,
+                  cursor_background[y * 16 + x]);
+        }
+    }
+    cursor_saved = false;
+}
+
+static void cursor_show(void) {
+    static const char *shape[16] = {
+        "X", "XX", "X.X", "X..X", "X...X", "X....X", "X.....X",
+        "X......X", "X...XXXX", "X.X", "X.XX", "X..X", "X..X", "X...X", "X...X", "X....X"
+    };
+    if (cursor_x > 303) {
+        cursor_x = 303;
+    }
+    if (cursor_y > 183) {
+        cursor_y = 183;
+    }
+    for (uint32_t y = 0; y < 16; y++) {
+        for (uint32_t x = 0; x < 16; x++) {
+            cursor_background[y * 16 + x] =
+                framebuffer[((uint32_t)cursor_y + y) * GUI_WIDTH +
+                            (uint32_t)cursor_x + x];
+        }
+    }
+    cursor_saved = true;
+    for (uint32_t y = 0; shape[y][0]; y++) {
+        for (uint32_t x = 0; shape[y][x]; x++) {
+            if (shape[y][x] == 'X') {
+                pixel((uint32_t)cursor_x + x, (uint32_t)cursor_y + y, 15);
+            } else if (shape[y][x] == '.') {
+                pixel((uint32_t)cursor_x + x, (uint32_t)cursor_y + y, 8);
+            }
+        }
+    }
+}
+
+static void show_panel(void) {
+    if (!active_panel) {
+        return;
+    }
+    fill(172, 126, 138, 58, 7);
+    fill(174, 128, 134, 54, 0);
+    fill(174, 128, 134, 11, active_panel == 1 ? 10 : 11);
+    text_at(179, 130, active_panel == 1 ? "SYSTEM" : "NETWORK", 0);
+    if (active_panel == 1) {
+        text_at(179, 143, "CKLOS 0.5 x86-64", 14);
+        text_at(179, 153, "GUI  320x200x256", 7);
+        text_at(179, 163, "MOUSE  PS/2 IRQ12", 11);
+        text_at(179, 173, mouse_available() ? "STATUS ONLINE" : "STATUS WAIT", 10);
+    } else {
+        text_at(179, 143, "RTL8139  10.0.2.15", 14);
+        text_at(179, 153, "TCP PORT 22 DEV", 7);
+        text_at(179, 163, "HOST 2222 -> 22", 11);
+        text_at(179, 173, "ICMP  READY", 10);
+    }
+}
+
+void gui_tick(void) {
+    int32_t next_x = mouse_x();
+    int32_t next_y = mouse_y();
+    bool click = mouse_take_click();
+    if (next_x != cursor_x || next_y != cursor_y || click) {
+        cursor_hide();
+        cursor_x = next_x;
+        cursor_y = next_y;
+        if (click) {
+            if (cursor_y < 16 && cursor_x >= 58 && cursor_x < 92) {
+                active_panel = 1;
+                show_panel();
+            } else if (cursor_y < 16 && cursor_x >= 96 && cursor_x < 130) {
+                active_panel = 2;
+                show_panel();
+            } else if (cursor_y < 16 && cursor_x >= 134 && cursor_x < 168) {
+                active_panel = 0;
+                gui_clear();
+            }
+        }
+        cursor_show();
+    }
 }
 
 void gui_init(void) {
@@ -74,7 +174,10 @@ void gui_init(void) {
     column = 0;
     foreground = 7;
     background = 0;
+    active_panel = 0;
+    cursor_saved = false;
     chrome();
+    cursor_show();
     serial_write("\x1B[2J\x1B[H");
 }
 
