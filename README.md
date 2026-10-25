@@ -49,6 +49,8 @@ make run
 
 `make run` 会在 macOS 上打开启用 `zoom-to-fit` 和 `show-cursor` 的 QEMU 窗口，并在当前终端中同步显示串口输出。系统进入 320×200 图形模式：点击窗口后移动鼠标，CKLOS 会显示并移动自己的 PS/2 软件光标。顶部 `SYS`、`NET`、`CLR` 按钮可以直接点击。
 
+QEMU 捕获鼠标后，按 `Control + Option + G`（QEMU 文档中写作 `Ctrl+Alt+G`）即可释放鼠标和键盘，把控制权交还 macOS。再次按相同快捷键会重新捕获。
+
 默认 SSH 主机转发端口为 `2222`。如果该端口已被占用，可以改用其他端口：
 
 ```sh

@@ -96,8 +96,22 @@ static void cursor_hide(void) {
 
 static void cursor_show(void) {
     static const char *shape[16] = {
-        "X", "XX", "X.X", "X..X", "X...X", "X....X", "X.....X",
-        "X......X", "X...XXXX", "X.X", "X.XX", "X..X", "X..X", "X...X", "X...X", "X....X"
+        "#           ",
+        "##          ",
+        "#W#         ",
+        "#WW#        ",
+        "#WWW#       ",
+        "#WWWW#      ",
+        "#WWWWW#     ",
+        "#WWWWWW#    ",
+        "#WWWWWWW#   ",
+        "#WWWWWWWW#  ",
+        "#WWWW####   ",
+        "#WW#WW#     ",
+        "#W# #WW#    ",
+        "##  #WW#    ",
+        "#    #W#    ",
+        "      ##    "
     };
     if (cursor_x > 303) {
         cursor_x = 303;
@@ -115,10 +129,10 @@ static void cursor_show(void) {
     cursor_saved = true;
     for (uint32_t y = 0; shape[y][0]; y++) {
         for (uint32_t x = 0; shape[y][x]; x++) {
-            if (shape[y][x] == 'X') {
+            if (shape[y][x] == '#') {
+                pixel((uint32_t)cursor_x + x, (uint32_t)cursor_y + y, 0);
+            } else if (shape[y][x] == 'W') {
                 pixel((uint32_t)cursor_x + x, (uint32_t)cursor_y + y, 15);
-            } else if (shape[y][x] == '.') {
-                pixel((uint32_t)cursor_x + x, (uint32_t)cursor_y + y, 8);
             }
         }
     }

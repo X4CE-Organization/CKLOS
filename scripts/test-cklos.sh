@@ -4,6 +4,8 @@ set -u
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 IMAGE="$ROOT/build/cklos.img"
 DATA_IMAGE="$ROOT/build/cklos-data.img"
+TEST_IMAGE="$ROOT/build/cklos-test.img"
+TEST_DATA_IMAGE="$ROOT/build/cklos-test-data.img"
 LOG="$ROOT/build/qemu-test.log"
 PERSIST_LOG="$ROOT/build/qemu-persist-test.log"
 QEMU=${QEMU:-$(command -v qemu-system-x86_64 2>/dev/null || true)}
@@ -12,6 +14,9 @@ if [ -z "$QEMU" ]; then
     echo "qemu-system-x86_64 is required. Run: brew install qemu" >&2
     exit 1
 fi
+
+cp "$IMAGE" "$TEST_IMAGE"
+cp "$DATA_IMAGE" "$TEST_DATA_IMAGE"
 
 set +e
 {
@@ -69,9 +74,9 @@ set +e
 } | "$QEMU" \
     -m 64M \
     -cpu max \
-    -drive "file=$IMAGE,format=raw,if=floppy" \
+    -drive "file=$TEST_IMAGE,format=raw,if=floppy" \
     -boot a \
-    -drive "file=$DATA_IMAGE,format=raw,if=ide,index=0" \
+    -drive "file=$TEST_DATA_IMAGE,format=raw,if=ide,index=0" \
     -netdev user,id=net0 \
     -device rtl8139,netdev=net0,mac=52:54:00:12:34:56 \
     -display none \
@@ -138,9 +143,9 @@ set +e
 } | "$QEMU" \
     -m 64M \
     -cpu max \
-    -drive "file=$IMAGE,format=raw,if=floppy" \
+    -drive "file=$TEST_IMAGE,format=raw,if=floppy" \
     -boot a \
-    -drive "file=$DATA_IMAGE,format=raw,if=ide,index=0" \
+    -drive "file=$TEST_DATA_IMAGE,format=raw,if=ide,index=0" \
     -netdev user,id=net0 \
     -device rtl8139,netdev=net0,mac=52:54:00:12:34:56 \
     -display none \
