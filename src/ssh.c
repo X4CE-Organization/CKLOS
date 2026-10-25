@@ -1,0 +1,670 @@
+#include "console.h"
+#include "crypto.h"
+#include "network.h"
+#include "ssh.h"
+#include "string.h"
+#include "version.h"
+
+#include "keys.h"
+
+#define SSH_SERVER_VERSION "SSH-2.0-" CKLOS_NAME "_0.5"
+#define SSH_MAX_PACKET 4096
+#define SSH_INPUT_SIZE 512
+
+enum {
+    SSH_MSG_DISCONNECT = 1,
+    SSH_MSG_SERVICE_REQUEST = 5,
+    SSH_MSG_SERVICE_ACCEPT = 6,
+    SSH_MSG_KEXINIT = 20,
+    SSH_MSG_NEWKEYS = 21,
+    SSH_MSG_KEX_ECDH_INIT = 30,
+    SSH_MSG_KEX_ECDH_REPLY = 31,
+    SSH_MSG_USERAUTH_REQUEST = 50,
+    SSH_MSG_USERAUTH_FAILURE = 51,
+    SSH_MSG_USERAUTH_SUCCESS = 52,
+    SSH_MSG_USERAUTH_PK_OK = 60,
+    SSH_MSG_GLOBAL_REQUEST = 80,
+    SSH_MSG_REQUEST_FAILURE = 82,
+    SSH_MSG_CHANNEL_OPEN = 90,
+    SSH_MSG_CHANNEL_OPEN_CONFIRMATION = 91,
+    SSH_MSG_CHANNEL_WINDOW_ADJUST = 93,
+    SSH_MSG_CHANNEL_DATA = 94,
+    SSH_MSG_CHANNEL_EOF = 96,
+    SSH_MSG_CHANNEL_CLOSE = 97,
+    SSH_MSG_CHANNEL_REQUEST = 98,
+    SSH_MSG_CHANNEL_SUCCESS = 99,
+    SSH_MSG_CHANNEL_FAILURE = 100
+};
+
+typedef struct {
+    const uint8_t *data;
+    uint32_t length;
+} ssh_string;
+
+typedef enum {
+    SSH_PHASE_VERSION,
+    SSH_PHASE_KEX,
+    SSH_PHASE_SERVICE,
+    SSH_PHASE_AUTH,
+    SSH_PHASE_CONNECTION,
+    SSH_PHASE_FAILED
+} ssh_phase;
+
+static ssh_phase phase;
+static char server_version[64];
+static char client_version[128];
+static uint32_t client_version_length;
+static uint8_t input[8192];
+static uint32_t input_length;
+static uint8_t send_payload[SSH_MAX_PACKET];
+static uint8_t packet_buffer[SSH_MAX_PACKET + 64];
+static uint8_t key_exchange_client[2048];
+static uint32_t key_exchange_client_length;
+static uint8_t key_exchange_server[512];
+static uint32_t key_exchange_server_length;
+static uint8_t session_id[32];
+static uint32_t send_sequence;
+static uint32_t receive_sequence;
+static bool send_encrypted;
+static bool receive_encrypted;
+static uint8_t send_key[32];
+static uint8_t receive_key[32];
+static cklos_aes_ctr send_cipher;
+static cklos_aes_ctr receive_cipher;
+static bool channel_open;
+static bool shell_active;
+static uint32_t client_channel;
+static uint32_t server_channel;
+static uint8_t console_input[SSH_INPUT_SIZE];
+static uint32_t console_input_head;
+static uint32_t console_input_tail;
+static char status_text[48] = "listening";
+
+static void write_u32(uint8_t *output, uint32_t value) {
+    output[0] = (uint8_t)(value >> 24);
+    output[1] = (uint8_t)(value >> 16);
+    output[2] = (uint8_t)(value >> 8);
+    output[3] = (uint8_t)value;
+}
+
+static uint32_t read_u32(const uint8_t *input_data) {
+    return (uint32_t)input_data[0] << 24 | (uint32_t)input_data[1] << 16
+         | (uint32_t)input_data[2] << 8 | input_data[3];
+}
+
+static bool read_byte(const uint8_t *data, uint32_t length, uint32_t *offset,
+                      uint8_t *value) {
+    if (*offset >= length) {
+        return false;
+    }
+    *value = data[(*offset)++];
+    return true;
+}
+
+static bool read_string(const uint8_t *data, uint32_t length, uint32_t *offset,
+                        ssh_string *value) {
+    if (*offset + 4 > length) {
+        return false;
+    }
+    uint32_t string_length = read_u32(data + *offset);
+    *offset += 4;
+    if (string_length > length - *offset) {
+        return false;
+    }
+    value->data = data + *offset;
+    value->length = string_length;
+    *offset += string_length;
+    return true;
+}
+
+static bool string_equals(ssh_string value, const char *text) {
+    uint32_t length = (uint32_t)strlen(text);
+    return value.length == length && memcmp(value.data, text, length) == 0;
+}
+
+static uint32_t put_string(uint8_t *output, const void *data, uint32_t length) {
+    write_u32(output, length);
+    if (length) {
+        memcpy(output + 4, data, length);
+    }
+    return length + 4;
+}
+
+static void send_raw_packet(const uint8_t *payload, uint32_t payload_length) {
+    uint32_t block_size = send_encrypted ? 16 : 8;
+    uint32_t padding_length = block_size - ((payload_length + 5) % block_size);
+    if (padding_length < 4) {
+        padding_length += block_size;
+    }
+    uint32_t packet_length = payload_length + padding_length + 1;
+    uint32_t plain_length = packet_length + 4;
+    write_u32(packet_buffer, packet_length);
+    packet_buffer[4] = (uint8_t)padding_length;
+    memcpy(packet_buffer + 5, payload, payload_length);
+    cklos_random_bytes(packet_buffer + 5 + payload_length, padding_length);
+
+    uint8_t mac[32];
+    uint32_t mac_length = 0;
+    if (send_encrypted) {
+        uint8_t mac_input[4 + SSH_MAX_PACKET];
+        write_u32(mac_input, send_sequence);
+        memcpy(mac_input + 4, packet_buffer, plain_length);
+        cklos_hmac_sha256(send_key, 32, mac_input, 4 + plain_length, mac);
+        mac_length = 32;
+        cklos_aes_ctr_crypt(&send_cipher, packet_buffer, plain_length);
+    }
+    network_tcp_write(packet_buffer, plain_length);
+    if (mac_length) {
+        network_tcp_write(mac, mac_length);
+    }
+    send_sequence++;
+}
+
+static void send_message(const uint8_t *payload, uint32_t length) {
+    send_raw_packet(payload, length);
+}
+
+static uint32_t build_kexinit(uint8_t *output) {
+    uint32_t offset = 0;
+    output[offset++] = SSH_MSG_KEXINIT;
+    cklos_random_bytes(output + offset, 16);
+    offset += 16;
+    const char *names[] = {
+        "curve25519-sha256",
+        "ssh-ed25519",
+        "aes128-ctr", "aes128-ctr",
+        "hmac-sha2-256", "hmac-sha2-256",
+        "none", "none", "", ""
+    };
+    for (uint32_t index = 0; index < 10; index++) {
+        offset += put_string(output + offset, names[index], (uint32_t)strlen(names[index]));
+    }
+    output[offset++] = 0;
+    write_u32(output + offset, 0);
+    offset += 4;
+    return offset;
+}
+
+static void begin_key_exchange(void) {
+    uint32_t length = build_kexinit(send_payload);
+    memcpy(key_exchange_server, send_payload, length);
+    key_exchange_server_length = length;
+    phase = SSH_PHASE_KEX;
+    send_message(send_payload, length);
+}
+
+static void derive_key(const uint8_t *k, uint32_t k_length, const uint8_t *hash,
+                       char letter, uint8_t *output, uint32_t output_length) {
+    uint8_t material[1024];
+    uint32_t offset = 0;
+    offset += put_string(material + offset, k, k_length);
+    memcpy(material + offset, hash, 32);
+    offset += 32;
+    material[offset++] = (uint8_t)letter;
+    memcpy(material + offset, session_id, 32);
+    offset += 32;
+    uint8_t digest[32];
+    cklos_sha256(material, offset, digest);
+    memcpy(output, digest, output_length > 32 ? 32 : output_length);
+}
+
+static void process_key_exchange(const uint8_t *payload, uint32_t length) {
+    if (length < 5 || payload[0] != SSH_MSG_KEX_ECDH_INIT) {
+        phase = SSH_PHASE_FAILED;
+        return;
+    }
+    uint32_t offset = 1;
+    ssh_string client_ephemeral;
+    if (!read_string(payload, length, &offset, &client_ephemeral)
+        || client_ephemeral.length != 32) {
+        phase = SSH_PHASE_FAILED;
+        return;
+    }
+
+    uint8_t ephemeral_secret[32];
+    uint8_t ephemeral_public[32];
+    uint8_t shared[32];
+    cklos_random_bytes(ephemeral_secret, 32);
+    cklos_x25519_public(ephemeral_secret, ephemeral_public);
+    if (!cklos_x25519_shared(ephemeral_secret, client_ephemeral.data, shared)) {
+        phase = SSH_PHASE_FAILED;
+        return;
+    }
+
+    uint8_t k_value[33];
+    uint32_t k_offset = 0;
+    if (shared[0] & 0x80) {
+        k_value[k_offset++] = 0;
+    }
+    uint32_t shared_offset = 0;
+    while (shared_offset < 31 && shared[shared_offset] == 0) {
+        shared_offset++;
+    }
+    memcpy(k_value + k_offset, shared + shared_offset, 32 - shared_offset);
+    uint32_t k_length = k_offset + 32 - shared_offset;
+
+    uint8_t host_secret[64];
+    uint8_t host_public[32];
+    cklos_ed25519_keypair(ssh_host_seed, host_secret, host_public);
+    uint8_t host_key[64];
+    uint32_t host_key_length = put_string(host_key, "ssh-ed25519", 11);
+    host_key_length += put_string(host_key + host_key_length, host_public, 32);
+
+    uint8_t exchange[2048];
+    uint32_t exchange_length = 0;
+    exchange_length += put_string(exchange + exchange_length, client_version, client_version_length);
+    exchange_length += put_string(exchange + exchange_length, server_version, (uint32_t)strlen(server_version));
+    exchange_length += put_string(exchange + exchange_length, key_exchange_client, key_exchange_client_length);
+    exchange_length += put_string(exchange + exchange_length, key_exchange_server, key_exchange_server_length);
+    exchange_length += put_string(exchange + exchange_length, host_key, host_key_length);
+    exchange_length += put_string(exchange + exchange_length, client_ephemeral.data, 32);
+    exchange_length += put_string(exchange + exchange_length, ephemeral_public, 32);
+    exchange_length += put_string(exchange + exchange_length, k_value, k_length);
+
+    uint8_t exchange_hash[32];
+    cklos_sha256(exchange, exchange_length, exchange_hash);
+    memcpy(session_id, exchange_hash, 32);
+    uint8_t signature[64];
+    cklos_ed25519_sign(host_secret, exchange_hash, 32, signature);
+    uint8_t signature_blob[80];
+    uint32_t signature_length = put_string(signature_blob, "ssh-ed25519", 11);
+    signature_length += put_string(signature_blob + signature_length, signature, 64);
+
+    uint32_t reply_length = 0;
+    send_payload[reply_length++] = SSH_MSG_KEX_ECDH_REPLY;
+    reply_length += put_string(send_payload + reply_length, host_key, host_key_length);
+    reply_length += put_string(send_payload + reply_length, ephemeral_public, 32);
+    reply_length += put_string(send_payload + reply_length, signature_blob, signature_length);
+    send_message(send_payload, reply_length);
+
+    uint8_t iv_c2s[16];
+    uint8_t iv_s2c[16];
+    uint8_t key_c2s[32];
+    uint8_t key_s2c[32];
+    uint8_t hmac_c2s[32];
+    uint8_t hmac_s2c[32];
+    derive_key(k_value, k_length, exchange_hash, 'A', iv_c2s, 16);
+    derive_key(k_value, k_length, exchange_hash, 'B', iv_s2c, 16);
+    derive_key(k_value, k_length, exchange_hash, 'C', key_c2s, 32);
+    derive_key(k_value, k_length, exchange_hash, 'D', key_s2c, 32);
+    derive_key(k_value, k_length, exchange_hash, 'E', hmac_c2s, 32);
+    derive_key(k_value, k_length, exchange_hash, 'F', hmac_s2c, 32);
+    cklos_aes_ctr_init(&receive_cipher, key_c2s, iv_c2s);
+    cklos_aes_ctr_init(&send_cipher, key_s2c, iv_s2c);
+    memcpy(receive_key, hmac_c2s, 32);
+    memcpy(send_key, hmac_s2c, 32);
+
+    const uint8_t newkeys = SSH_MSG_NEWKEYS;
+    send_message(&newkeys, 1);
+    send_encrypted = true;
+}
+
+static void send_auth_failure(void) {
+    uint32_t offset = 0;
+    send_payload[offset++] = SSH_MSG_USERAUTH_FAILURE;
+    offset += put_string(send_payload + offset, "publickey", 9);
+    send_payload[offset++] = 0;
+    send_message(send_payload, offset);
+}
+
+static void process_userauth(const uint8_t *payload, uint32_t length) {
+    uint32_t offset = 1;
+    ssh_string user;
+    ssh_string service;
+    ssh_string method;
+    uint8_t has_signature;
+    ssh_string algorithm;
+    ssh_string key_blob;
+    if (!read_string(payload, length, &offset, &user)
+        || !read_string(payload, length, &offset, &service)
+        || !read_string(payload, length, &offset, &method)
+        || !read_byte(payload, length, &offset, &has_signature)
+        || !read_string(payload, length, &offset, &algorithm)
+        || !read_string(payload, length, &offset, &key_blob)) {
+        send_auth_failure();
+        return;
+    }
+    if (!string_equals(user, "cklos") || !string_equals(service, "ssh-connection")
+        || !string_equals(method, "publickey")
+        || !string_equals(algorithm, "ssh-ed25519")
+        || key_blob.length != 51 || memcmp(key_blob.data + 19, ssh_authorized_public_key, 32) != 0) {
+        send_auth_failure();
+        return;
+    }
+
+    if (!has_signature) {
+        uint32_t out = 0;
+        send_payload[out++] = SSH_MSG_USERAUTH_PK_OK;
+        out += put_string(send_payload + out, algorithm.data, algorithm.length);
+        out += put_string(send_payload + out, key_blob.data, key_blob.length);
+        send_message(send_payload, out);
+        return;
+    }
+
+    uint32_t signed_end = offset;
+    ssh_string signature;
+    if (!read_string(payload, length, &offset, &signature) || signature.length != 83) {
+        send_auth_failure();
+        return;
+    }
+    uint8_t signed_data[512];
+    uint32_t signed_length = 0;
+    signed_length += put_string(signed_data, session_id, 32);
+    memcpy(signed_data + signed_length, payload, signed_end);
+    signed_length += signed_end;
+    if (read_u32(signature.data + 15) != 64
+        || !cklos_ed25519_verify(ssh_authorized_public_key, signed_data, signed_length,
+                                 signature.data + 19)) {
+        send_auth_failure();
+        return;
+    }
+    phase = SSH_PHASE_CONNECTION;
+    const uint8_t success = SSH_MSG_USERAUTH_SUCCESS;
+    send_message(&success, 1);
+}
+
+static void process_connection(const uint8_t *payload, uint32_t length) {
+    if (!length) {
+        return;
+    }
+    uint32_t offset = 1;
+    if (payload[0] == SSH_MSG_SERVICE_REQUEST) {
+        ssh_string service;
+        if (read_string(payload, length, &offset, &service)
+            && string_equals(service, "ssh-userauth")) {
+            uint32_t out = 0;
+            send_payload[out++] = SSH_MSG_SERVICE_ACCEPT;
+            out += put_string(send_payload + out, service.data, service.length);
+            phase = SSH_PHASE_AUTH;
+            send_message(send_payload, out);
+        }
+        return;
+    }
+    if (payload[0] == SSH_MSG_CHANNEL_OPEN) {
+        ssh_string type;
+        if (!read_string(payload, length, &offset, &type) || !string_equals(type, "session")
+            || offset + 8 > length) {
+            return;
+        }
+        client_channel = read_u32(payload + offset);
+        server_channel = 0;
+        offset += 8;
+        uint32_t out = 0;
+        send_payload[out++] = SSH_MSG_CHANNEL_OPEN_CONFIRMATION;
+        write_u32(send_payload + out, client_channel);
+        out += 4;
+        write_u32(send_payload + out, server_channel);
+        out += 4;
+        write_u32(send_payload + out, 1024 * 1024);
+        out += 4;
+        write_u32(send_payload + out, 32768);
+        out += 4;
+        channel_open = true;
+        send_message(send_payload, out);
+        return;
+    }
+    if (payload[0] == SSH_MSG_CHANNEL_REQUEST) {
+        if (offset + 4 > length) {
+            return;
+        }
+        uint32_t recipient = read_u32(payload + offset);
+        offset += 4;
+        ssh_string request;
+        uint8_t want_reply;
+        if (!read_string(payload, length, &offset, &request)
+            || !read_byte(payload, length, &offset, &want_reply)) {
+            return;
+        }
+        bool accepted = string_equals(request, "pty-req") || string_equals(request, "shell");
+        if (string_equals(request, "shell") && accepted) {
+            shell_active = true;
+            status_text[0] = '\0';
+            strcpy(status_text, "authenticated shell");
+            console_write("\r\nCKLOS SSH terminal\r\n");
+        }
+        if (want_reply) {
+            uint32_t out = 0;
+            send_payload[out++] = accepted ? SSH_MSG_CHANNEL_SUCCESS : SSH_MSG_CHANNEL_FAILURE;
+            write_u32(send_payload + out, recipient);
+            out += 4;
+            send_message(send_payload, out);
+        }
+        return;
+    }
+    if (payload[0] == SSH_MSG_CHANNEL_DATA) {
+        if (offset + 4 > length) {
+            return;
+        }
+        offset += 4;
+        ssh_string data;
+        if (!read_string(payload, length, &offset, &data)) {
+            return;
+        }
+        for (uint32_t index = 0; index < data.length; index++) {
+            uint32_t next = (console_input_head + 1) % SSH_INPUT_SIZE;
+            if (next != console_input_tail) {
+                console_input[console_input_head] = data.data[index];
+                console_input_head = next;
+            }
+        }
+        return;
+    }
+    if (payload[0] == SSH_MSG_CHANNEL_CLOSE || payload[0] == SSH_MSG_CHANNEL_EOF) {
+        shell_active = false;
+        channel_open = false;
+        console_input_head = console_input_tail = 0;
+        strcpy(status_text, "listening");
+        if (payload[0] == SSH_MSG_CHANNEL_CLOSE) {
+            send_message(payload, 5);
+        }
+        return;
+    }
+    if (payload[0] == SSH_MSG_GLOBAL_REQUEST) {
+        uint32_t out = 0;
+        send_payload[out++] = SSH_MSG_REQUEST_FAILURE;
+        send_message(send_payload, out);
+        return;
+    }
+    if (payload[0] == SSH_MSG_USERAUTH_REQUEST) {
+        process_userauth(payload, length);
+        return;
+    }
+}
+
+static void process_payload(const uint8_t *payload, uint32_t length) {
+    if (!length || phase == SSH_PHASE_FAILED) {
+        return;
+    }
+    switch (payload[0]) {
+        case SSH_MSG_KEXINIT:
+            memcpy(key_exchange_client, payload, length);
+            key_exchange_client_length = length;
+            break;
+        case SSH_MSG_KEX_ECDH_INIT:
+            process_key_exchange(payload, length);
+            break;
+        case SSH_MSG_NEWKEYS:
+            if (send_encrypted) {
+                receive_encrypted = true;
+            }
+            break;
+        case SSH_MSG_SERVICE_REQUEST:
+            process_connection(payload, length);
+            break;
+        case SSH_MSG_USERAUTH_REQUEST:
+            if (phase == SSH_PHASE_AUTH) {
+                process_userauth(payload, length);
+            }
+            break;
+        case SSH_MSG_CHANNEL_OPEN:
+        case SSH_MSG_CHANNEL_REQUEST:
+        case SSH_MSG_CHANNEL_DATA:
+        case SSH_MSG_CHANNEL_EOF:
+        case SSH_MSG_CHANNEL_CLOSE:
+        case SSH_MSG_GLOBAL_REQUEST:
+            process_connection(payload, length);
+            break;
+        case SSH_MSG_DISCONNECT:
+            phase = SSH_PHASE_FAILED;
+            break;
+        default:
+            break;
+    }
+}
+
+static void process_packets(void) {
+    while (input_length >= 5) {
+        uint8_t header[16];
+        uint32_t peek_length = input_length < 16 ? input_length : 16;
+        memcpy(header, input, peek_length);
+        if (receive_encrypted) {
+            cklos_aes_ctr peek = receive_cipher;
+            cklos_aes_ctr_crypt(&peek, header, peek_length);
+        }
+        uint32_t packet_length = read_u32(header);
+        if (packet_length < 5 || packet_length > SSH_MAX_PACKET
+            || (receive_encrypted && ((packet_length + 4) & 15)) != 0) {
+            phase = SSH_PHASE_FAILED;
+            return;
+        }
+        uint32_t encrypted_length = packet_length + 4;
+        uint32_t total = encrypted_length + (receive_encrypted ? 32 : 0);
+        if (input_length < total) {
+            return;
+        }
+        if (receive_encrypted) {
+            uint8_t mac[32];
+            uint8_t mac_input[4 + SSH_MAX_PACKET];
+            write_u32(mac_input, receive_sequence);
+            memcpy(mac_input + 4, input, encrypted_length);
+            cklos_hmac_sha256(receive_key, 32, mac_input, 4 + encrypted_length, mac);
+            uint8_t difference = 0;
+            for (uint32_t index = 0; index < 32; index++) {
+                difference |= mac[index] ^ input[encrypted_length + index];
+            }
+            if (difference) {
+                phase = SSH_PHASE_FAILED;
+                return;
+            }
+            cklos_aes_ctr_crypt(&receive_cipher, input, encrypted_length);
+        }
+        uint8_t padding_length = input[4];
+        if (padding_length < 4 || padding_length + 1 >= packet_length) {
+            phase = SSH_PHASE_FAILED;
+            return;
+        }
+        process_payload(input + 5, packet_length - padding_length - 1);
+        receive_sequence++;
+        memmove(input, input + total, input_length - total);
+        input_length -= total;
+    }
+}
+
+static void process_version(void) {
+    while (input_length >= 2) {
+        uint32_t index = 0;
+        while (index + 1 < input_length
+               && !(input[index] == '\r' && input[index + 1] == '\n')) {
+            index++;
+        }
+        if (index + 1 >= input_length) {
+            return;
+        }
+        if (index < 4 || memcmp(input, "SSH-", 4) != 0) {
+            memmove(input, input + index + 2, input_length - index - 2);
+            input_length -= index + 2;
+            continue;
+        }
+        if (index >= sizeof(client_version)) {
+            phase = SSH_PHASE_FAILED;
+            return;
+        }
+        memcpy(client_version, input, index);
+        client_version_length = index;
+        memmove(input, input + index + 2, input_length - index - 2);
+        input_length -= index + 2;
+        phase = SSH_PHASE_KEX;
+        begin_key_exchange();
+        return;
+    }
+}
+
+static void tcp_event(uint8_t event, const uint8_t *data, uint32_t length) {
+    if (event == TCP_EVENT_CONNECTED) {
+        phase = SSH_PHASE_VERSION;
+        input_length = 0;
+        send_sequence = 0;
+        receive_sequence = 0;
+        send_encrypted = false;
+        receive_encrypted = false;
+        channel_open = false;
+        shell_active = false;
+        client_channel = 0;
+        server_channel = 0;
+        console_input_head = console_input_tail = 0;
+        strcpy(status_text, "version exchange");
+        strcpy(server_version, SSH_SERVER_VERSION);
+        char banner[80];
+        uint32_t banner_length = (uint32_t)strlen(server_version);
+        memcpy(banner, server_version, banner_length);
+        banner[banner_length++] = '\r';
+        banner[banner_length++] = '\n';
+        network_tcp_write((const uint8_t *)banner, banner_length);
+    } else if (event == TCP_EVENT_DATA) {
+        if (input_length + length <= sizeof(input)) {
+            memcpy(input + input_length, data, length);
+            input_length += length;
+            if (phase == SSH_PHASE_VERSION) {
+                process_version();
+            }
+            process_packets();
+        }
+    } else if (event == TCP_EVENT_DISCONNECTED) {
+        shell_active = false;
+        channel_open = false;
+        phase = SSH_PHASE_VERSION;
+        input_length = 0;
+        strcpy(status_text, "listening");
+    }
+}
+
+bool ssh_init(void) {
+    phase = SSH_PHASE_VERSION;
+    return network_tcp_listen(22, tcp_event);
+}
+
+bool ssh_console_active(void) {
+    return channel_open && shell_active;
+}
+
+void ssh_console_putc(char character) {
+    if (!ssh_console_active()) {
+        return;
+    }
+    uint32_t offset = 0;
+    send_payload[offset++] = SSH_MSG_CHANNEL_DATA;
+    write_u32(send_payload + offset, client_channel);
+    offset += 4;
+    send_payload[offset++] = 0;
+    send_payload[offset++] = 0;
+    send_payload[offset++] = 0;
+    send_payload[offset++] = 1;
+    send_payload[offset++] = (uint8_t)character;
+    send_message(send_payload, offset);
+}
+
+bool ssh_console_read(char *character) {
+    if (console_input_tail == console_input_head) {
+        return false;
+    }
+    *character = (char)console_input[console_input_tail];
+    console_input_tail = (console_input_tail + 1) % SSH_INPUT_SIZE;
+    return true;
+}
+
+const char *ssh_status(void) {
+    if (!network_available()) {
+        return "offline";
+    }
+    return status_text;
+}
