@@ -25,7 +25,8 @@ ifeq ($(HOST_OS),Darwin)
 QEMU_RUN_DISPLAY ?= cocoa,zoom-to-fit=on
 endif
 QEMU_DISPLAY_ARG := $(if $(QEMU_RUN_DISPLAY),-display $(QEMU_RUN_DISPLAY))
-NETWORK_ARGS := -netdev user,id=net0,hostfwd=tcp:127.0.0.1:2222-:22,hostfwd=tcp:127.0.0.1:2323-:2323 \
+HOST_SSH_PORT ?= 2222
+NETWORK_ARGS := -netdev user,id=net0,hostfwd=tcp:127.0.0.1:$(HOST_SSH_PORT)-:22 \
 	-device rtl8139,netdev=net0,mac=52:54:00:12:34:56
 
 CFLAGS := --target=i386-none-elf -m32 -std=c11 -O2 -Wall -Wextra -Werror \

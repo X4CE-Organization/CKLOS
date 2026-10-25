@@ -71,7 +71,7 @@ set +e
     -drive "file=$IMAGE,format=raw,if=floppy" \
     -boot a \
     -drive "file=$DATA_IMAGE,format=raw,if=ide,index=0" \
-    -netdev user,id=net0,hostfwd=tcp:127.0.0.1:2223-:22,hostfwd=tcp:127.0.0.1:2324-:2323 \
+    -netdev user,id=net0 \
     -device rtl8139,netdev=net0,mac=52:54:00:12:34:56 \
     -display none \
     -serial stdio \
@@ -139,7 +139,7 @@ set +e
     -drive "file=$IMAGE,format=raw,if=floppy" \
     -boot a \
     -drive "file=$DATA_IMAGE,format=raw,if=ide,index=0" \
-    -netdev user,id=net0,hostfwd=tcp:127.0.0.1:2223-:22,hostfwd=tcp:127.0.0.1:2324-:2323 \
+    -netdev user,id=net0 \
     -device rtl8139,netdev=net0,mac=52:54:00:12:34:56 \
     -display none \
     -serial stdio \

@@ -49,6 +49,14 @@ make run
 
 `make run` 会在 macOS 上打开启用 `zoom-to-fit` 的可缩放 QEMU 窗口，并在当前终端中同步显示串口输出。系统进入 320×200 图形模式：顶部是 CKLOS 标题栏，中间是窗口式命令行，底部显示快捷键和端口状态。
 
+默认 SSH 主机转发端口为 `2222`。如果该端口已被占用，可以改用其他端口：
+
+```sh
+make run HOST_SSH_PORT=2224
+```
+
+如果 QEMU 报告 `Could not set up host forwarding rule`，请关闭之前残留的 QEMU 进程或更换 `HOST_SSH_PORT`。
+
 只使用纯终端模式：
 
 ```sh
