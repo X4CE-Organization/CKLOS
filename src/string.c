@@ -63,6 +63,47 @@ char *strcpy(char *destination, const char *source) {
     return result;
 }
 
+char *strchr(const char *text, int character) {
+    while (*text) {
+        if ((uint8_t)*text == (uint8_t)character) {
+            return (char *)text;
+        }
+        text++;
+    }
+    return character == 0 ? (char *)text : 0;
+}
+
+size_t strspn(const char *text, const char *accepted) {
+    size_t count = 0;
+    while (text[count]) {
+        bool found = false;
+        for (const char *cursor = accepted; *cursor; cursor++) {
+            if (text[count] == *cursor) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            break;
+        }
+        count++;
+    }
+    return count;
+}
+
+size_t strcspn(const char *text, const char *rejected) {
+    size_t count = 0;
+    while (text[count]) {
+        for (const char *cursor = rejected; *cursor; cursor++) {
+            if (text[count] == *cursor) {
+                return count;
+            }
+        }
+        count++;
+    }
+    return count;
+}
+
 void *memset(void *destination, int value, size_t count) {
     uint8_t *bytes = (uint8_t *)destination;
     while (count--) {

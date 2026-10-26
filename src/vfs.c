@@ -96,7 +96,7 @@ void vfs_init(void) {
     );
     add_file(
         "ABOUT.TXT",
-        "CKLOS is a freestanding 32-bit x86 operating system.\n"
+        "CKLOS is a freestanding 64-bit x86 operating system.\n"
         "It uses its own bootloader, IDT, timer, terminal driver and shell.\n"
         "There is no Linux kernel or userspace underneath.\n",
         true

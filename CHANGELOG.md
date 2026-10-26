@@ -2,6 +2,23 @@
 
 All notable changes to CKLOS are documented here.
 
+## 0.8.0 — 2026-10-27
+
+### Added
+
+- Two-stage BIOS bootloader that safely loads kernels across 64 KiB boundaries.
+- 128 MiB CKLOSFS2 volume backed by pinned LittleFS 2.11.3.
+- Hierarchical directories, UTF-8 paths and variable-length files up to 64 MiB.
+- `FSLS`, `FSCD`, `FSPWD`, `FSMKDIR`, `FSWRITE`, `FSCAT`, `FSMV` and `FSRM`.
+- `FSFILL`, non-overwriting CKLOSFS1 migration through `FSMIGRATE`, and `FSCHECK`.
+- Automated large-file, deep-directory, UTF-8 and cross-reboot FS2 tests.
+
+### Fixed
+
+- The second-stage loader now advances its BIOS segment by 64 KiB, not 512 bytes.
+- Freestanding LittleFS builds no longer emit unavailable SSE instructions.
+- FS2 superblock validation now checks version, geometry and checksum.
+
 ## 0.7.0 — 2026-10-26
 
 ### Added

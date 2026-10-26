@@ -3,7 +3,7 @@ ENTRY(kernel_entry)
 
 SECTIONS
 {
-    . = 0x00010000;
+    . = 0x00020000;
 
     .text : ALIGN(16)
     {

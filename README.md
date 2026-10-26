@@ -5,7 +5,7 @@ CKLOS 是一个独立启动的 x86-64 图形操作系统。它不运行在 Linux
 启动链路：
 
 ```text
-BIOS -> CKLOS 自写引导扇区 -> x86-64 长模式 -> C 内核 -> CKLOS GUI
+BIOS -> CKLOS 两阶段引导器 -> x86-64 长模式 -> C 内核 -> CKLOS GUI
 ```
 
 项目文件夹和系统中的正式名称统一为 `CKLOS`。
@@ -25,10 +25,12 @@ BIOS -> CKLOS 自写引导扇区 -> x86-64 长模式 -> C 内核 -> CKLOS GUI
 - RKS1 x86-64 可执行格式、运行时校验和加载以及程序 API
 - 可写 12 KiB 内存文件系统，内置只读系统文件
 - ATA PIO 数据盘和 CKLOSFS1 持久化格式，用户文件可跨重启保存
+- 128 MiB CKLOSFS2 数据盘、目录树、255 字节 UTF-8 文件名和最大 64 MiB 的可变长度文件
+- LittleFS 2.11.3 原子元数据更新、启动恢复、目录重命名与 `FSMIGRATE`/`FSCHECK`
 - CMOS 实时时钟、CPU 信息、内存布局和设备诊断
 - 整数计算、十六进制查看、颜色主题和 PC 扬声器测试
 
-这是 CKLOS 0.7.0 的开源 x86-64 图形内核版本。它已经有长模式、分页、任务切换、持久化存储、RTL8139 网络、图形终端、可操作鼠标和 RKS 可执行文件，但还不是 Linux 那样的完整通用操作系统：用户态隔离、POSIX 系统调用、完整驱动模型、SSH、USB 和完整桌面尚未实现。
+这是 CKLOS 0.8.0 的开源 x86-64 图形内核版本。它已经有长模式、分页、任务切换、两级持久化存储、RTL8139 网络、图形终端、可操作鼠标和 RKS 可执行文件，但还不是 Linux 那样的完整通用操作系统：ELF64 用户态隔离、POSIX 系统调用、完整驱动模型、SSH、USB 和完整桌面尚未实现。
 
 ## 安装依赖
 
@@ -71,7 +73,7 @@ make term
 
 如果希望窗口像普通终端一样自由改变宽高，请使用 `make term`。串口控制台会跟随宿主终端尺寸自动换行，因此这是调整命令行窗口大小最方便的方式。也可以执行 `make run QEMU_RUN_DISPLAY=cocoa,zoom-to-fit=off` 关闭自动缩放。
 
-生成的可启动镜像位于 `build/cklos.img`，持久化数据盘位于 `build/cklos-data.img`。删除数据盘会清除已保存的用户文件。执行自动启动、调度、存储与跨重启测试：
+生成的可启动镜像位于 `build/cklos.img`，旧版 2 MiB 数据盘位于 `build/cklos-data.img`，CKLOSFS2 数据盘位于 `build/cklos-fs2.img`。删除数据盘会清除已保存的用户文件。执行自动启动、调度、存储与跨重启测试：
 
 ```sh
 make test
@@ -107,6 +109,14 @@ make test
 | `disk` | 查看 ATA 数据盘和已保存文件数 |
 | `disksave` | 把所有可写用户文件保存到 ATA 数据盘 |
 | `diskload` | 从 ATA 数据盘重新载入用户文件 |
+| `fsls PATH` / `fscd PATH` | 浏览 CKLOSFS2 目录树或切换目录 |
+| `fspwd` | 显示 CKLOSFS2 当前目录 |
+| `fsmkdir PATH` | 创建 CKLOSFS2 目录 |
+| `fswrite FILE TEXT` / `fscat FILE` | 写入或读取可变长度文件 |
+| `fsfill FILE BYTES` | 创建指定长度的文件，用于容量和持久化测试 |
+| `fsmv OLD NEW` / `fsrm PATH` | 原子重命名或删除 CKLOSFS2 路径 |
+| `fsmigrate` | 把 CKLOSFS1 用户文件导入 `/import`，不覆盖已有文件 |
+| `fscheck` | 遍历 CKLOSFS2 元数据并检查块分配 |
 | `run DEMO.CKL` | 执行内置演示脚本 |
 | `run FILE.CKL` | 执行用户命令脚本，支持最多四层嵌套 |
 | `exec HELLO.RKS` | 校验并执行 RKS1 可执行文件 |
@@ -136,7 +146,7 @@ RKS executable is running!
 
 当前稳定构建已经包含 RTL8139、ARP、IPv4、ICMP 和 TCP，并配置了 QEMU 主机端口 `2222` 到客户机端口 `22` 的转发。`ping 10.0.2.2` 和主机 TCP 连接均已验证。
 
-SSH-2 传输、公钥认证和 PTY 通道的实现保存在 `src/ssh.c`，密码学依赖使用固定版本 Monocypher 与 BearSSL。当前默认构建尚未启用 SSH：完整密码学后端使内核超过现有单级软盘引导器能够稳定加载的范围，二级引导器仍在修复跨 DMA 边界加载。请勿把当前 `2222` 端口当作可用的 SSH 服务。下一里程碑必须先完成大内核引导，再启用 `ssh_init()` 和端到端 OpenSSH 测试。
+SSH-2 传输、公钥认证和 PTY 通道的实现保存在 `src/ssh.c`，密码学依赖使用固定版本 Monocypher 与 BearSSL。两级引导器已经能够可靠加载跨 64 KiB 边界的较大内核，但 SSH 仍处于未启用状态，因为用户态进程与 PTY 通道隔离尚未完成。请勿把当前 `2222` 端口当作可用的 SSH 服务。
 
 ## 开源项目
 
@@ -152,7 +162,8 @@ CKLOS 使用 [MIT License](LICENSE)，允许使用、修改、分发和商业集
 ## 代码结构
 
 ```text
-src/boot.asm            实模式引导扇区和保护模式切换
+src/boot.asm            第一级引导扇区
+src/stage2.asm          第二级引导、内核加载、分页和长模式切换
 src/entry.asm           x86-64 内核入口和 BSS 初始化
 src/interrupt_stubs.asm 异常与硬件中断入口
 src/interrupts.c        IDT、PIC、PIT 和异常处理
@@ -160,6 +171,7 @@ src/memory.c            E820 内存、分页、页帧分配器和内核堆
 src/tasks.c             协作式轮转任务调度器
 src/task_switch.asm     任务上下文切换
 src/disk.c              ATA PIO 驱动与 CKLOSFS1 持久化
+src/fs2.c               CKLOSFS2、目录路径、迁移和一致性检查
 src/kernel.c            内核初始化
 src/gui.c               VGA 帧缓冲、窗口、按钮、面板和软件光标
 src/mouse.c             PS/2 鼠标 IRQ12 驱动
@@ -171,7 +183,7 @@ src/version.h           集中式版本信息
 linker.ld               内核链接布局
 ```
 
-内核入口位于 `0x00010000`，临时栈顶位于 `0x00090000`。引导器通过 BIOS E820 收集内存布局并把内核加载到低端内存，内核随后建立恒等分页、中断表、内核堆、任务调度器和持久化存储，再进入命令循环。
+内核入口位于 `0x00020000`，临时栈顶位于 `0x00090000`。第一级引导器加载第二级引导器；第二级通过 BIOS 读取内核并把内核加载到低端内存。内核随后建立恒等分页、中断表、内核堆、任务调度器和持久化存储，再进入命令循环。
 
 ## 后续路线
 

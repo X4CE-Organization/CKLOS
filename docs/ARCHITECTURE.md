@@ -3,9 +3,10 @@
 ## Boot
 
 1. BIOS 从 1.44 MiB 软盘镜像的第一个扇区加载 `boot.asm` 到 `0x7C00`。
-2. 引导器通过 INT 13h 读取 100 个内核扇区到物理地址 `0x00010000`。
-3. BIOS E820 内存表写入 `0x00000600`，启动信息位于 `0x00000500`。
-4. 引导器建立页表、启用 PAE/LME/PG，并进入 x86-64 长模式。
+2. 第一级引导器读取 32 个扇区，把第二级引导器加载到 `0x00010000`。
+3. 第二级引导器从 LBA 33 开始读取最多 200 个内核扇区到 `0x00020000`。
+4. 第二级引导器先进入 32 位平坦保护模式，再建立 PML4/PDPT/PD 页表并进入 x86-64 长模式。
+5. BIOS E820 内存表写入 `0x00000600`，启动信息位于 `0x00000500`。
 
 ## Memory map
 
@@ -14,7 +15,8 @@
 | `0x00000500` | Boot information |
 | `0x00000600` | E820 memory entries |
 | `0x00007C00` | Temporary bootloader |
-| `0x00010000` | Kernel image |
+| `0x00010000` | Second-stage bootloader |
+| `0x00020000` | Kernel image |
 | `0x00090000` | Initial kernel stack |
 | `0x000B8000` | VGA text buffer |
 | `0x00200000` | Page directory |
@@ -42,7 +44,9 @@ Shell 输入循环和 `sleep` 主动调用 `task_yield` 完成协作式轮转。
 
 ## Storage
 
-文件系统使用 24 个固定文件槽，每个文件最多 512 字节。RAM 中的可写文件可直接操作；`disksave` 将可写文件写入 ATA PIO 主盘。
+CKLOSFS2 使用 128 MiB 稀疏 ATA 数据盘和 4 KiB 块，LittleFS 2.11.3 提供目录、可变长度文件和元数据原子更新。超级块位于 LBA 0；文件系统数据从 LBA 8 开始。VFS 路径支持 4096 字节绝对路径和 255 字节 UTF-8 文件名。
+
+旧 CKLOSFS1 继续保留在独立的 2 MiB 数据盘上：
 
 CKLOSFS1 布局：
 
@@ -52,12 +56,12 @@ CKLOSFS1 布局：
 | 1-24 | 文件元数据 |
 | 25-48 | 文件内容 |
 
-元数据包括文件名、大小、标志和内容扇区。当前没有目录树、权限、日志或崩溃恢复；磁盘卸载前应执行 `disksave`。
+FS1 元数据包括文件名、大小、标志和内容扇区。`fsmigrate` 只把 FS1 用户文件复制到 CKLOSFS2 的 `/import/`，不会覆盖已有路径。FS2 使用 `fscheck` 遍历元数据并检查块分配。
 
 ## Known constraints
 
 - 仅有 ring-0 内核任务，没有独立用户地址空间。
 - 没有 POSIX 系统调用，也没有 ELF 程序加载器。
 - ATA PIO 是同步轮询实现，不支持热插拔、DMA 或多磁盘策略。
-- 没有网络协议栈、USB、电源管理或图形桌面。
+- 没有用户态、USB、电源管理或图形桌面。
 - 恒等映射是当前阶段的过渡设计，不应用于安全隔离。

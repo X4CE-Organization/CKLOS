@@ -4,8 +4,10 @@ set -u
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 IMAGE="$ROOT/build/cklos.img"
 DATA_IMAGE="$ROOT/build/cklos-data.img"
+FS2_IMAGE="$ROOT/build/cklos-fs2.img"
 TEST_IMAGE="$ROOT/build/cklos-test.img"
 TEST_DATA_IMAGE="$ROOT/build/cklos-test-data.img"
+TEST_FS2_IMAGE="$ROOT/build/cklos-test-fs2.img"
 LOG="$ROOT/build/qemu-test.log"
 PERSIST_LOG="$ROOT/build/qemu-persist-test.log"
 QEMU=${QEMU:-$(command -v qemu-system-x86_64 2>/dev/null || true)}
@@ -17,7 +19,8 @@ fi
 
 dd if=/dev/zero of="$TEST_IMAGE" bs=512 count=2880 2>/dev/null
 dd if="$ROOT/build/boot.bin" of="$TEST_IMAGE" conv=notrunc bs=512 seek=0 2>/dev/null
-dd if="$ROOT/build/kernel.bin" of="$TEST_IMAGE" conv=notrunc bs=512 seek=1 2>/dev/null
+dd if="$ROOT/build/stage2.bin" of="$TEST_IMAGE" conv=notrunc bs=512 seek=1 2>/dev/null
+dd if="$ROOT/build/kernel.bin" of="$TEST_IMAGE" conv=notrunc bs=512 seek=33 2>/dev/null
 if [ -f "$DATA_IMAGE" ]; then
     cp "$DATA_IMAGE" "$TEST_DATA_IMAGE"
 else
@@ -25,6 +28,11 @@ else
 fi
 python3 "$ROOT/tools/install-rks-disk.py" \
     "$TEST_DATA_IMAGE" "$ROOT/build/HELLO.RKS" HELLO.RKS
+if [ ! -f "$FS2_IMAGE" ]; then
+    echo "$FS2_IMAGE is required" >&2
+    exit 1
+fi
+cp "$FS2_IMAGE" "$TEST_FS2_IMAGE"
 
 set +e
 {
@@ -79,6 +87,24 @@ set +e
     sleep 0.2
     printf 'disksave\r'
     sleep 0.3
+    printf 'fsmkdir /home/cklos/deep\r'
+    sleep 0.2
+    printf 'fsmkdir /home/cklos/deep/中文\r'
+    sleep 0.2
+    printf 'fswrite /home/cklos/deep/中文/你好.txt 你好 CKLOS\r'
+    sleep 0.2
+    printf 'fsfill /home/cklos/deep/large.bin 32768\r'
+    sleep 0.6
+    printf 'fsmv /home/cklos/deep/large.bin /home/cklos/deep/renamed.bin\r'
+    sleep 0.2
+    printf 'fsmigrate\r'
+    sleep 0.3
+    printf 'fscheck\r'
+    sleep 0.3
+    printf 'fscat /import/PERSIST.TXT\r'
+    sleep 0.2
+    printf 'fscat /home/cklos/deep/中文/你好.txt\r'
+    sleep 0.2
     printf 'shutdown\r'
     sleep 1
 } | "$QEMU" \
@@ -87,6 +113,7 @@ set +e
     -drive "file=$TEST_IMAGE,format=raw,if=floppy" \
     -boot a \
     -drive "file=$TEST_DATA_IMAGE,format=raw,if=ide,index=0" \
+    -drive "file=$TEST_FS2_IMAGE,format=raw,if=ide,index=1" \
     -netdev user,id=net0 \
     -device rtl8139,netdev=net0,mac=52:54:00:12:34:56 \
     -display none \
@@ -105,9 +132,9 @@ if [ "$status" -ne 33 ] && [ "$status" -ne 0 ]; then
 fi
 
 for expected in \
-    'CKLOS 0.7.0 kernel is running' \
+    'CKLOS 0.8.0 kernel is running' \
     'CKLOS>' \
-    'OS        CKLOS 0.7.0' \
+    'OS        CKLOS 0.8.0' \
     'PIT 100 Hz' \
     'Uptime' \
     'Heap allocator: PASS' \
@@ -133,6 +160,12 @@ for expected in \
     'history' \
     '294' \
     'Saved 2 user file(s)' \
+    'Directory created.' \
+    'FSFILL: created /home/cklos/deep/large.bin with 32768 bytes.' \
+    'FSMIGRATE: imported ' \
+    'FSCHECK: metadata valid' \
+    'persistence survives reboot' \
+    '你好 CKLOS' \
     'Shutting down CKLOS'
 do
     if ! grep -F "$expected" "$LOG" >/dev/null; then
@@ -150,6 +183,14 @@ set +e
     sleep 0.3
     printf 'cat PERSIST.TXT\r'
     sleep 0.3
+    printf 'fscheck\r'
+    sleep 0.3
+    printf 'fscat /import/PERSIST.TXT\r'
+    sleep 0.3
+    printf 'fscat /home/cklos/deep/中文/你好.txt\r'
+    sleep 0.3
+    printf 'fsls /home/cklos/deep\r'
+    sleep 0.3
     printf 'shutdown\r'
     sleep 1
 } | "$QEMU" \
@@ -158,6 +199,7 @@ set +e
     -drive "file=$TEST_IMAGE,format=raw,if=floppy" \
     -boot a \
     -drive "file=$TEST_DATA_IMAGE,format=raw,if=ide,index=0" \
+    -drive "file=$TEST_FS2_IMAGE,format=raw,if=ide,index=1" \
     -netdev user,id=net0 \
     -device rtl8139,netdev=net0,mac=52:54:00:12:34:56 \
     -display none \
@@ -177,7 +219,10 @@ fi
 
 for expected in \
     'Saved     2 user file(s)' \
-    'persistence survives reboot'
+    'persistence survives reboot' \
+    'FSCHECK: metadata valid' \
+    '你好 CKLOS' \
+    'renamed.bin  32768 bytes'
 do
     if ! grep -F "$expected" "$PERSIST_LOG" >/dev/null; then
         echo "Persistence test failed: missing '$expected'" >&2

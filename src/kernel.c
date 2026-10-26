@@ -1,5 +1,6 @@
 #include "console.h"
 #include "disk.h"
+#include "fs2.h"
 #include "interrupts.h"
 #include "memory.h"
 #include "mouse.h"
@@ -17,6 +18,7 @@ void kernel_main(const boot_info *info) {
     rks_init();
     disk_init();
     disk_load_filesystem();
+    fs2_init();
     network_init();
     mouse_init();
     interrupts_init();

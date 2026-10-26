@@ -4,7 +4,8 @@ SHELL := /bin/sh
 BUILD := build
 IMAGE := $(BUILD)/cklos.img
 DATA_IMAGE := $(BUILD)/cklos-data.img
-KERNEL_MAX_BYTES := 51200
+FS2_IMAGE := $(BUILD)/cklos-fs2.img
+KERNEL_MAX_BYTES := 102400
 VERSION := $(shell grep 'CKLOS_VERSION "' src/version.h | cut -d '"' -f2)
 
 NASM ?= $(shell command -v nasm 2>/dev/null)
@@ -35,21 +36,26 @@ CFLAGS := --target=x86_64-none-elf -m64 -std=c11 -Os -Wall -Wextra -Werror \
 	-mno-mmx -mno-80387 -mno-red-zone -mcmodel=large -nostdlib -MMD -MP \
 	-Isrc -I$(BUILD) \
 	-Ithird_party/font8x8 \
+	-Ithird_party/littlefs \
 	-Ithird_party/monocypher/src -Ithird_party/monocypher/src/optional \
-	-Ithird_party/bearssl/inc -Ithird_party/bearssl/src
+	-Ithird_party/bearssl/inc -Ithird_party/bearssl/src \
+	-DLFS_NO_MALLOC -DLFS_NO_ASSERT -DLFS_NO_DEBUG -DLFS_NO_WARN -DLFS_NO_ERROR
 NASMFLAGS := -f elf64 -Wall -Werror -w-reloc-abs-dword -w-reloc-rel-dword \
 	-w-reloc-abs-qword
 CRYPTO_CFLAGS := --target=x86_64-none-elf -m64 -std=c11 -O2 \
 	-ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
 	-fno-asynchronous-unwind-tables -fno-unwind-tables -fno-common \
+	-mno-sse -mno-sse2 -mno-mmx -mno-80387 \
 	-ffunction-sections -fdata-sections \
 	-Isrc \
 	-Ithird_party/monocypher/src -Ithird_party/monocypher/src/optional \
-	-Ithird_party/bearssl/inc -Ithird_party/bearssl/src
+	-Ithird_party/bearssl/inc -Ithird_party/bearssl/src \
+	-Ithird_party/littlefs -DLFS_NO_MALLOC -DLFS_NO_ASSERT \
+	-DLFS_NO_DEBUG -DLFS_NO_WARN -DLFS_NO_ERROR
 
 C_SOURCES := src/kernel.c src/console.c src/serial.c src/keyboard.c \
 	src/string.c src/memory.c src/vfs.c src/disk.c src/interrupts.c \
-	src/network.c src/gui.c src/mouse.c src/rks.c src/tasks.c src/shell.c
+	src/network.c src/gui.c src/mouse.c src/rks.c src/fs2.c src/tasks.c src/shell.c
 C_OBJECTS := $(patsubst src/%.c,$(BUILD)/%.o,$(C_SOURCES))
 VENDOR_SOURCES := \
 	third_party/monocypher/src/monocypher.c \
@@ -66,15 +72,19 @@ VENDOR_SOURCES := \
 	third_party/bearssl/src/symcipher/aes_ct64.c \
 	third_party/bearssl/src/symcipher/aes_ct64_ctr.c \
 	third_party/bearssl/src/symcipher/aes_ct64_dec.c \
-	third_party/bearssl/src/symcipher/aes_ct64_enc.c
+	third_party/bearssl/src/symcipher/aes_ct64_enc.c \
+	third_party/littlefs/lfs.c \
+	third_party/littlefs/lfs_util.c
 VENDOR_OBJECTS := $(patsubst %.c,$(BUILD)/vendor/%.o,$(VENDOR_SOURCES))
+FS2_SOURCES := third_party/littlefs/lfs.c third_party/littlefs/lfs_util.c
+FS2_OBJECTS := $(patsubst %.c,$(BUILD)/vendor/%.o,$(FS2_SOURCES))
 OBJECTS := $(BUILD)/entry.o $(BUILD)/interrupt_stubs.o $(BUILD)/task_switch.o \
-	$(C_OBJECTS)
+	$(C_OBJECTS) $(FS2_OBJECTS)
 DEPFILES := $(C_OBJECTS:.o=.d)
 
 -include $(DEPFILES)
 
-.PHONY: all image run term test check release clean doctor help crypto font keys
+.PHONY: all image run term test check release clean doctor help crypto font fs2 keys
 
 all: image
 
@@ -116,9 +126,13 @@ $(BUILD)/%.o: src/%.c | $(BUILD)
 
 crypto:
 	@./scripts/fetch-crypto.sh
+	@./scripts/fetch-littlefs.sh
 
 font:
 	@./scripts/fetch-font.sh
+
+fs2:
+	@./scripts/fetch-littlefs.sh
 
 keys: | $(BUILD)
 	@./scripts/gen-ssh-keys.sh
@@ -126,6 +140,7 @@ keys: | $(BUILD)
 $(BUILD)/crypto.o: keys
 $(BUILD)/ssh.o: keys
 $(BUILD)/gui.o: font
+$(BUILD)/fs2.o: fs2
 
 $(BUILD)/vendor/%.o: %.c | crypto $(BUILD)
 	@mkdir -p $(dir $@)
@@ -138,7 +153,19 @@ $(BUILD)/kernel.elf: $(OBJECTS) linker.ld
 $(BUILD)/kernel.bin: $(BUILD)/kernel.elf
 	$(OBJCOPY) -O binary $< $@
 
-image: $(BUILD)/boot.bin $(BUILD)/kernel.bin $(BUILD)/HELLO.RKS
+$(BUILD)/fs2-root/.stamp: $(BUILD)/HELLO.RKS tools/make-fs2-root.py | $(BUILD)
+	python3 tools/make-fs2-root.py $(BUILD)/fs2-root $(BUILD)/HELLO.RKS
+	touch $@
+
+$(BUILD)/mkfs2: tools/mkfs2.c third_party/littlefs/lfs.c third_party/littlefs/lfs_util.c | fs2 $(BUILD)
+	$(CLANG) -O2 -Ithird_party/littlefs tools/mkfs2.c \
+		third_party/littlefs/lfs.c third_party/littlefs/lfs_util.c -o $@
+
+$(FS2_IMAGE): $(BUILD)/mkfs2 $(BUILD)/fs2-root/.stamp
+	$(BUILD)/mkfs2 $@ $(BUILD)/fs2-root
+
+image: $(BUILD)/boot.bin $(BUILD)/stage2.bin $(BUILD)/kernel.bin \
+	$(BUILD)/HELLO.RKS $(FS2_IMAGE)
 	@size=$$(wc -c < $(BUILD)/kernel.bin | tr -d ' '); \
 	if [ "$$size" -gt "$(KERNEL_MAX_BYTES)" ]; then \
 		echo "Kernel is $$size bytes; boot limit is $(KERNEL_MAX_BYTES)." >&2; \
@@ -146,7 +173,8 @@ image: $(BUILD)/boot.bin $(BUILD)/kernel.bin $(BUILD)/HELLO.RKS
 	fi
 	dd if=/dev/zero of=$(IMAGE) bs=512 count=2880 2>/dev/null
 	dd if=$(BUILD)/boot.bin of=$(IMAGE) conv=notrunc bs=512 seek=0 2>/dev/null
-	dd if=$(BUILD)/kernel.bin of=$(IMAGE) conv=notrunc bs=512 seek=1 2>/dev/null
+	dd if=$(BUILD)/stage2.bin of=$(IMAGE) conv=notrunc bs=512 seek=1 2>/dev/null
+	dd if=$(BUILD)/kernel.bin of=$(IMAGE) conv=notrunc bs=512 seek=33 2>/dev/null
 	@if [ ! -f "$(DATA_IMAGE)" ]; then \
 		dd if=/dev/zero of=$(DATA_IMAGE) bs=512 count=4096 2>/dev/null; \
 	fi
@@ -159,6 +187,7 @@ run: image
 	$(QEMU) -m 64M -drive file=$(IMAGE),format=raw,if=floppy -boot a \
 		-cpu max \
 		-drive file=$(DATA_IMAGE),format=raw,if=ide,index=0 \
+		-drive file=$(FS2_IMAGE),format=raw,if=ide,index=1 \
 		$(NETWORK_ARGS) \
 		$(QEMU_DISPLAY_ARG) -serial stdio -monitor none \
 		-device isa-debug-exit || status=$$?; \
@@ -170,11 +199,13 @@ term: image
 	$(QEMU) -m 64M -drive file=$(IMAGE),format=raw,if=floppy -boot a \
 		-cpu max \
 		-drive file=$(DATA_IMAGE),format=raw,if=ide,index=0 \
+		-drive file=$(FS2_IMAGE),format=raw,if=ide,index=1 \
 		$(NETWORK_ARGS) \
 		-display none -serial stdio -monitor none -device isa-debug-exit || status=$$?; \
 	if [ $$status -ne 0 ] && [ $$status -ne 33 ]; then exit $$status; fi
 
-test: $(BUILD)/boot.bin $(BUILD)/kernel.bin $(BUILD)/HELLO.RKS
+test: $(BUILD)/boot.bin $(BUILD)/stage2.bin $(BUILD)/kernel.bin \
+	$(BUILD)/HELLO.RKS $(FS2_IMAGE)
 	@test -n "$(QEMU)" || (echo "Install QEMU: brew install qemu" >&2; exit 1)
 	./scripts/test-cklos.sh
 

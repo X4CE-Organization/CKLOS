@@ -1,5 +1,6 @@
 #include "console.h"
 #include "disk.h"
+#include "fs2.h"
 #include "interrupts.h"
 #include "io.h"
 #include "keyboard.h"
@@ -28,6 +29,7 @@ extern uint8_t __bss_end[];
 
 static void normalize_command(char *command);
 static int split_arguments(char *command);
+static void join_arguments(int first, int argc, char *output, uint32_t capacity);
 static void run_command(int argc);
 
 static uint8_t bcd_to_binary(uint8_t value) {
@@ -131,6 +133,11 @@ static void command_help(void) {
         "  DISKLOAD          Reload saved user files from the ATA disk\n"
         "  RUN FILE.CKL      Execute a text command script\n"
         "  EXEC FILE.RKS     Load and execute an RKS binary\n"
+        "  FSLS / FSCD       Browse the CKLOSFS2 directory tree\n"
+        "  FSWRITE / FSCAT   Write or read CKLOSFS2 files\n"
+        "  FSFILL FILE BYTES Create a variable-length test file\n"
+        "  FSMIGRATE         Import CKLOSFS1 user files into /import\n"
+        "  FSCHECK           Verify CKLOSFS2 metadata and allocations\n"
         "  ECHO TEXT         Print text\n"
         "  CALC A OP B       Integer arithmetic (+ - * / % & | ^ << >>)\n"
         "  COLOR NAME        Theme: cyan green amber blue white red\n"
@@ -192,7 +199,7 @@ static void command_sysinfo(void) {
     console_write("Arch      x86-64 long mode\n");
     console_printf("CPU       %s\n", vendor);
     console_printf("CPUID     max leaf %u\n", eax);
-    console_write("Kernel    loaded at 0x00010000\n");
+    console_write("Kernel    loaded at 0x00020000\n");
     console_write("Stack     top at 0x00090000\n");
     console_printf("BSS       %u bytes\n", (uint32_t)(__bss_end - __bss_start));
     console_printf("RAM       %u KiB detected, 64 MiB identity-mapped\n",
@@ -216,7 +223,7 @@ static void command_mem(void) {
         "Address range        Use\n"
         "0x00000000-0x000003FF  Real-mode interrupt vectors\n"
         "0x00007C00-0x00007DFF  Bootloader (temporary)\n"
-        "0x00010000-0x0004FFFF  CKLOS kernel image and BSS\n"
+        "0x00020000-0x0004FFFF  CKLOS kernel image and BSS\n"
         "0x00090000-...         Kernel stack\n"
         "0x000B8000-0x000B8F9F  VGA text buffer\n"
         "0x00100000-...         Extended RAM (available to future code)\n"
@@ -897,6 +904,169 @@ static void command_rks(void) {
                    rks_installed_count());
 }
 
+static void fs2_list_item(const char *name, uint32_t size, uint8_t type) {
+    console_write(type == FS2_TYPE_DIRECTORY ? "  [DIR] " : "  [FILE] ");
+    console_write(name);
+    if (type != FS2_TYPE_DIRECTORY) {
+        console_printf("  %u bytes", size);
+    }
+    console_putc('\n');
+}
+
+static void command_fs2(int argc) {
+    const char *path = argc > 1 ? arguments[1] : ".";
+    if (!fs2_available()) {
+        console_write("CKLOSFS2 is not mounted.\n");
+        return;
+    }
+    console_printf("CKLOSFS2 %s\n", fs2_get_cwd());
+    if (fs2_list(path, fs2_list_item) != 0) {
+        console_printf("FSLS: cannot open %s.\n", path);
+    }
+}
+
+static void command_fscd(int argc) {
+    if (argc != 2) {
+        console_write("Usage: FSCD PATH\n");
+        return;
+    }
+    if (fs2_set_cwd(arguments[1]) != 0) {
+        console_write("FSCD: directory not found.\n");
+    }
+}
+
+static void command_fspwd(void) {
+    console_write(fs2_get_cwd());
+    console_putc('\n');
+}
+
+static void command_fsmkdir(int argc) {
+    if (argc != 2) {
+        console_write("Usage: FSMKDIR PATH\n");
+        return;
+    }
+    console_printf(fs2_mkdir(arguments[1]) == 0 ? "Directory created.\n"
+                                                : "FSMKDIR: failed.\n");
+}
+
+static void command_fswrite(int argc) {
+    if (argc < 2) {
+        console_write("Usage: FSWRITE FILE TEXT\n");
+        return;
+    }
+    char text[VFS_CONTENT_CAPACITY + 1];
+    join_arguments(2, argc, text, sizeof(text));
+    if (fs2_write(arguments[1], text, (uint32_t)strlen(text), false) != 0) {
+        console_write("FSWRITE: failed.\n");
+        return;
+    }
+    console_write("File written.\n");
+}
+
+static void command_fscat(int argc) {
+    if (argc != 2) {
+        console_write("Usage: FSCAT FILE\n");
+        return;
+    }
+    uint32_t size;
+    if (fs2_stat(arguments[1], &size, 0) != 0) {
+        console_write("FSCAT: file not found.\n");
+        return;
+    }
+    uint8_t *buffer = kmalloc(size + 1);
+    if (!buffer) {
+        console_write("FSCAT: not enough memory.\n");
+        return;
+    }
+    uint32_t read;
+    if (fs2_read(arguments[1], buffer, size, &read) == 0) {
+        buffer[read] = '\0';
+        console_write((char *)buffer);
+        if (read && buffer[read - 1] != '\n') console_putc('\n');
+    } else {
+        console_write("FSCAT: read failed.\n");
+    }
+    kfree(buffer);
+}
+
+static void command_fsrm(int argc) {
+    if (argc != 2) {
+        console_write("Usage: FSRM PATH\n");
+        return;
+    }
+    console_printf(fs2_remove(arguments[1]) == 0 ? "Removed.\n" : "FSRM: failed.\n");
+}
+
+static void command_fsmv(int argc) {
+    if (argc != 3) {
+        console_write("Usage: FSMV OLD NEW\n");
+        return;
+    }
+    console_printf(fs2_rename(arguments[1], arguments[2]) == 0 ? "Renamed.\n"
+                                                              : "FSMV: failed.\n");
+}
+
+static void command_fsfill(int argc) {
+    if (argc != 3) {
+        console_write("Usage: FSFILL FILE BYTES\n");
+        return;
+    }
+    bool valid;
+    int32_t requested = parse_int(arguments[2], &valid);
+    if (!valid || requested < 0 || requested > 64 * 1024 * 1024) {
+        console_write("FSFILL: byte count must be 0..67108864.\n");
+        return;
+    }
+    uint8_t *chunk = kmalloc(4096);
+    if (!chunk) {
+        console_write("FSFILL: not enough memory.\n");
+        return;
+    }
+    for (uint32_t index = 0; index < 4096; index++) {
+        chunk[index] = "CKLOSFS2\n"[(index / 9) % 9];
+    }
+    uint32_t remaining = (uint32_t)requested;
+    uint32_t first = remaining < 4096 ? remaining : 4096;
+    int result = fs2_write(arguments[1], chunk, first, false);
+    remaining -= first;
+    while (result == 0 && remaining) {
+        uint32_t count = remaining < 4096 ? remaining : 4096;
+        result = fs2_write(arguments[1], chunk, count, true);
+        remaining -= count;
+    }
+    kfree(chunk);
+    if (result == 0) {
+        console_printf("FSFILL: created %s with %d bytes.\n",
+                       arguments[1], (int)requested);
+    } else {
+        console_write("FSFILL: failed.\n");
+    }
+}
+
+static void command_fsmigrate(void) {
+    uint32_t imported;
+    uint32_t skipped;
+    int result = fs2_migrate_legacy(&imported, &skipped);
+    if (result == 0) {
+        console_printf("FSMIGRATE: imported %u, skipped %u existing file(s).\n",
+                       imported, skipped);
+    } else {
+        console_write("FSMIGRATE: migration failed; existing files were preserved.\n");
+    }
+}
+
+static void command_fscheck(void) {
+    uint32_t used;
+    uint32_t total;
+    int result = fs2_fsck(&used, &total);
+    if (result == 0) {
+        console_printf("FSCHECK: metadata valid, %u / %u data blocks used.\n",
+                       used, total);
+    } else {
+        console_printf("FSCHECK: errors found (%d).\n", result);
+    }
+}
+
 static void join_arguments(int first, int argc, char *output, uint32_t capacity) {
     uint32_t length = 0;
     output[0] = '\0';
@@ -1147,6 +1317,28 @@ static void run_command(int argc) {
         command_exec(argc);
     } else if (strcmp(arguments[0], "rks") == 0) {
         command_rks();
+    } else if (strcmp(arguments[0], "fsls") == 0) {
+        command_fs2(argc);
+    } else if (strcmp(arguments[0], "fscd") == 0) {
+        command_fscd(argc);
+    } else if (strcmp(arguments[0], "fspwd") == 0) {
+        command_fspwd();
+    } else if (strcmp(arguments[0], "fsmkdir") == 0) {
+        command_fsmkdir(argc);
+    } else if (strcmp(arguments[0], "fswrite") == 0) {
+        command_fswrite(argc);
+    } else if (strcmp(arguments[0], "fscat") == 0) {
+        command_fscat(argc);
+    } else if (strcmp(arguments[0], "fsrm") == 0) {
+        command_fsrm(argc);
+    } else if (strcmp(arguments[0], "fsmv") == 0) {
+        command_fsmv(argc);
+    } else if (strcmp(arguments[0], "fsfill") == 0) {
+        command_fsfill(argc);
+    } else if (strcmp(arguments[0], "fsmigrate") == 0) {
+        command_fsmigrate();
+    } else if (strcmp(arguments[0], "fscheck") == 0) {
+        command_fscheck();
     } else if (strcmp(arguments[0], "write") == 0) {
         command_write(argc, false);
     } else if (strcmp(arguments[0], "append") == 0) {
@@ -1189,6 +1381,7 @@ static void run_command(int argc) {
             "rtc0     CMOS real-time clock\n"
             "ram0     Writable RAM disk, 12 KiB\n"
             "ata0     ATA PIO data disk, 2 MiB persistent CKLOSFS1 volume\n"
+            "ata1     ATA PIO 128 MiB CKLOSFS2 directory volume\n"
             "pcspk0   Programmable interval timer speaker\n"
         );
     } else if (strcmp(arguments[0], "beep") == 0) {
@@ -1301,7 +1494,7 @@ static void read_line(void) {
             console_write(line);
             continue;
         }
-        if (key >= 32 && key <= 126 && length + 1 < LINE_SIZE) {
+        if (key >= 32 && key <= 0xFF && length + 1 < LINE_SIZE) {
             line[length++] = (char)key;
             line[length] = '\0';
             console_putc((char)key);
