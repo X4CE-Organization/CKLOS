@@ -2,6 +2,19 @@
 
 All notable changes to CKLOS are documented here.
 
+## 0.9.0 — 2026-10-27
+
+### Added
+
+- ELF64 static user executable loader and ring-3 execution.
+- Per-process page tables, CR3 switching and supervisor/user isolation.
+- Kernel/user GDT, 64-bit TSS and `int 0x80` system-call gate.
+- `fork`, `execve`, `wait4`, `exit`, `getpid`, `kill`, `yield` and timer preemption.
+- `mmap`, `brk`, file descriptors, FS2-backed file I/O, pipes and `poll`.
+- SSE/x87 context switching for user processes.
+- Pinned musl static libc, public headers and archives installed into CKLOSFS2.
+- User-side ELF fault, fork, exec, file and pipe regression programs.
+
 ## 0.8.0 — 2026-10-27
 
 ### Added

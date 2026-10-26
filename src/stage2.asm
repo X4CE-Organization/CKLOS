@@ -1,7 +1,7 @@
 bits 16
 org 0x10000
 
-KERNEL_SECTORS equ 200
+KERNEL_SECTORS equ 256
 KERNEL_SEGMENT equ 0x2000
 
 stage2_start:

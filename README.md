@@ -27,10 +27,13 @@ BIOS -> CKLOS 两阶段引导器 -> x86-64 长模式 -> C 内核 -> CKLOS GUI
 - ATA PIO 数据盘和 CKLOSFS1 持久化格式，用户文件可跨重启保存
 - 128 MiB CKLOSFS2 数据盘、目录树、255 字节 UTF-8 文件名和最大 64 MiB 的可变长度文件
 - LittleFS 2.11.3 原子元数据更新、启动恢复、目录重命名与 `FSMIGRATE`/`FSCHECK`
+- ELF64 静态程序加载、ring 3、每进程 CR3、用户栈和内核/用户内存隔离
+- `int 0x80` 系统调用、`fork`/`execve`/`wait4`、管道、文件描述符继承和定时抢占
+- 固定版本 musl 静态 libc、标准/POSIX 头文件和 `/usr/lib/libc.a`
 - CMOS 实时时钟、CPU 信息、内存布局和设备诊断
 - 整数计算、十六进制查看、颜色主题和 PC 扬声器测试
 
-这是 CKLOS 0.8.0 的开源 x86-64 图形内核版本。它已经有长模式、分页、任务切换、两级持久化存储、RTL8139 网络、图形终端、可操作鼠标和 RKS 可执行文件，但还不是 Linux 那样的完整通用操作系统：ELF64 用户态隔离、POSIX 系统调用、完整驱动模型、SSH、USB 和完整桌面尚未实现。
+这是 CKLOS 0.9.0 的开源 x86-64 图形内核版本。它已经有长模式、分页、任务切换、两级持久化存储、ELF64 用户态隔离、静态 musl libc、RTL8139 网络、图形终端、可操作鼠标和可执行文件，但还不是 Linux 那样的完整通用操作系统：完整驱动模型、SSH、USB 和完整桌面尚未实现。
 
 ## 安装依赖
 
@@ -120,6 +123,8 @@ make test
 | `run DEMO.CKL` | 执行内置演示脚本 |
 | `run FILE.CKL` | 执行用户命令脚本，支持最多四层嵌套 |
 | `exec HELLO.RKS` | 校验并执行 RKS1 可执行文件 |
+| `elfexec FILE.ELF` | 在 ring 3 装载并执行静态 ELF64 程序 |
+| `procs` | 显示活动进程数和当前 PID |
 | `rks` | 显示 RKS 运行时和已安装程序数量 |
 | `calc 42 '*' 7` | 支持加减乘除、取余、位运算和移位 |
 | `color green` | 切换终端主题 |
@@ -140,13 +145,13 @@ CKLOS> exec HELLO.RKS
 RKS executable is running!
 ```
 
-示例源码位于 `programs/hello.c`，ABI 在 `programs/rks_api.h`。程序使用 `rks_api` 获取输出、清屏、计时、延时和鼠标坐标。当前 RKS 程序仍运行在 ring 0，尚未提供用户态隔离。
+示例源码位于 `programs/hello.c`，ABI 在 `programs/rks_api.h`。`RKS1` 是兼容的旧式 ring-0 程序格式，只用于现有演示。新的隔离程序使用 `ELFEXEC`，运行在 ring 3；示例包括 `USERHELLO.ELF`、`USERFORK.ELF`、`USERFAULT.ELF`、`USEREXEC.ELF`、`USERIO.ELF`、`USERPIPE.ELF` 和链接 musl 的 `MUSLHELLO.ELF`。
 
 ## SSH 开发状态
 
 当前稳定构建已经包含 RTL8139、ARP、IPv4、ICMP 和 TCP，并配置了 QEMU 主机端口 `2222` 到客户机端口 `22` 的转发。`ping 10.0.2.2` 和主机 TCP 连接均已验证。
 
-SSH-2 传输、公钥认证和 PTY 通道的实现保存在 `src/ssh.c`，密码学依赖使用固定版本 Monocypher 与 BearSSL。两级引导器已经能够可靠加载跨 64 KiB 边界的较大内核，但 SSH 仍处于未启用状态，因为用户态进程与 PTY 通道隔离尚未完成。请勿把当前 `2222` 端口当作可用的 SSH 服务。
+SSH-2 传输、公钥认证和 PTY 通道的实现保存在 `src/ssh.c`，密码学依赖使用固定版本 Monocypher 与 BearSSL。两级引导器和 ring 3 进程已经可用，但 SSH 仍处于未启用状态，因为登录会话、PTY 语义和完整信号交付尚未完成。请勿把当前 `2222` 端口当作可用的 SSH 服务。
 
 ## 开源项目
 
@@ -172,6 +177,9 @@ src/tasks.c             协作式轮转任务调度器
 src/task_switch.asm     任务上下文切换
 src/disk.c              ATA PIO 驱动与 CKLOSFS1 持久化
 src/fs2.c               CKLOSFS2、目录路径、迁移和一致性检查
+src/process.c           ELF64、ring 3、进程、系统和文件描述符
+src/process.asm         GDT/TSS、用户态入口和返回内核上下文
+src/syscall.h           CKLOS/Linux x86-64 兼容系统调用编号
 src/kernel.c            内核初始化
 src/gui.c               VGA 帧缓冲、窗口、按钮、面板和软件光标
 src/mouse.c             PS/2 鼠标 IRQ12 驱动
@@ -187,4 +195,4 @@ linker.ld               内核链接布局
 
 ## 后续路线
 
-下一阶段会继续补充用户态与系统调用、可执行程序加载、进程隔离、鼠标和窗口合成。图形终端已经启用，SSH 端口仍保持关闭。
+下一阶段是原生 TinyCC 后端 `cck`、RKS2 容器和 C 标准一致性测试。SSH 端口仍保持关闭。

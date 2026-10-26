@@ -3,6 +3,7 @@ section .text
 
 extern interrupt_dispatch
 global interrupt_stubs
+global isr128
 
 %macro ISR_NO_ERROR 1
 isr%1:
@@ -58,6 +59,8 @@ ISR_NO_ERROR vector
 %assign vector vector + 1
 %endrep
 
+ISR_NO_ERROR 128
+
 isr_common:
     push rax
     push rbx
@@ -76,6 +79,7 @@ isr_common:
     push r15
     mov rdi, rsp
     call interrupt_dispatch
+    mov rsp, rax
     pop r15
     pop r14
     pop r13
@@ -103,5 +107,6 @@ interrupt_stubs:
     dq isr24, isr25, isr26, isr27, isr28, isr29, isr30, isr31
     dq isr32, isr33, isr34, isr35, isr36, isr37, isr38, isr39
     dq isr40, isr41, isr42, isr43, isr44, isr45, isr46, isr47
+    dq isr128
 
 section .note.GNU-stack noalloc noexec nowrite progbits

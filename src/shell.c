@@ -7,6 +7,7 @@
 #include "memory.h"
 #include "mouse.h"
 #include "network.h"
+#include "process.h"
 #include "rks.h"
 #include "shell.h"
 #include "string.h"
@@ -133,6 +134,8 @@ static void command_help(void) {
         "  DISKLOAD          Reload saved user files from the ATA disk\n"
         "  RUN FILE.CKL      Execute a text command script\n"
         "  EXEC FILE.RKS     Load and execute an RKS binary\n"
+        "  ELFEXEC FILE.ELF  Run a static ELF64 program in ring 3\n"
+        "  PROCS             Show isolated process count and current PID\n"
         "  FSLS / FSCD       Browse the CKLOSFS2 directory tree\n"
         "  FSWRITE / FSCAT   Write or read CKLOSFS2 files\n"
         "  FSFILL FILE BYTES Create a variable-length test file\n"
@@ -898,6 +901,19 @@ static void command_exec(int argc) {
     rks_run(arguments[1]);
 }
 
+static void command_elfexec(int argc) {
+    if (argc != 2) {
+        console_write("Usage: ELFEXEC FILE.ELF\n");
+        return;
+    }
+    process_run_elf(arguments[1]);
+}
+
+static void command_processes(void) {
+    console_printf("Processes %u  Current PID %u\n",
+                   process_count(), process_current_pid());
+}
+
 static void command_rks(void) {
     console_printf("RKS1 executable runtime\nInstalled images: %u\n"
                    "Example: EXEC HELLO.RKS\n",
@@ -1315,6 +1331,10 @@ static void run_command(int argc) {
         command_run(argc);
     } else if (strcmp(arguments[0], "exec") == 0) {
         command_exec(argc);
+    } else if (strcmp(arguments[0], "elfexec") == 0) {
+        command_elfexec(argc);
+    } else if (strcmp(arguments[0], "procs") == 0) {
+        command_processes();
     } else if (strcmp(arguments[0], "rks") == 0) {
         command_rks();
     } else if (strcmp(arguments[0], "fsls") == 0) {

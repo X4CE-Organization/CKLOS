@@ -5,7 +5,18 @@ BUILD := build
 IMAGE := $(BUILD)/cklos.img
 DATA_IMAGE := $(BUILD)/cklos-data.img
 FS2_IMAGE := $(BUILD)/cklos-fs2.img
-KERNEL_MAX_BYTES := 102400
+USER_HELLO_ELF := $(BUILD)/USERHELLO.ELF
+USER_FORK_ELF := $(BUILD)/USERFORK.ELF
+USER_FAULT_ELF := $(BUILD)/USERFAULT.ELF
+USER_EXEC_ELF := $(BUILD)/USEREXEC.ELF
+USER_IO_ELF := $(BUILD)/USERIO.ELF
+USER_PIPE_ELF := $(BUILD)/USERPIPE.ELF
+MUSL_STAGE := $(BUILD)/musl-stage/usr/local/musl
+MUSL_STAMP := $(BUILD)/musl/.cklos-ready
+MUSL_ELF := $(BUILD)/MUSLHELLO.ELF
+USER_ELVES := $(USER_HELLO_ELF) $(USER_FORK_ELF) $(USER_FAULT_ELF) \
+	$(USER_EXEC_ELF) $(USER_IO_ELF) $(USER_PIPE_ELF) $(MUSL_ELF)
+KERNEL_MAX_BYTES := 131072
 VERSION := $(shell grep 'CKLOS_VERSION "' src/version.h | cut -d '"' -f2)
 
 NASM ?= $(shell command -v nasm 2>/dev/null)
@@ -56,6 +67,7 @@ CRYPTO_CFLAGS := --target=x86_64-none-elf -m64 -std=c11 -O2 \
 C_SOURCES := src/kernel.c src/console.c src/serial.c src/keyboard.c \
 	src/string.c src/memory.c src/vfs.c src/disk.c src/interrupts.c \
 	src/network.c src/gui.c src/mouse.c src/rks.c src/fs2.c src/tasks.c src/shell.c
+C_SOURCES := $(C_SOURCES) src/process.c
 C_OBJECTS := $(patsubst src/%.c,$(BUILD)/%.o,$(C_SOURCES))
 VENDOR_SOURCES := \
 	third_party/monocypher/src/monocypher.c \
@@ -79,12 +91,12 @@ VENDOR_OBJECTS := $(patsubst %.c,$(BUILD)/vendor/%.o,$(VENDOR_SOURCES))
 FS2_SOURCES := third_party/littlefs/lfs.c third_party/littlefs/lfs_util.c
 FS2_OBJECTS := $(patsubst %.c,$(BUILD)/vendor/%.o,$(FS2_SOURCES))
 OBJECTS := $(BUILD)/entry.o $(BUILD)/interrupt_stubs.o $(BUILD)/task_switch.o \
-	$(C_OBJECTS) $(FS2_OBJECTS)
+	$(BUILD)/process_asm.o $(C_OBJECTS) $(FS2_OBJECTS)
 DEPFILES := $(C_OBJECTS:.o=.d)
 
 -include $(DEPFILES)
 
-.PHONY: all image run term test check release clean doctor help crypto font fs2 keys
+.PHONY: all image run term test check release clean doctor help crypto font fs2 musl keys
 
 all: image
 
@@ -108,6 +120,9 @@ $(BUILD)/interrupt_stubs.o: src/interrupt_stubs.asm | $(BUILD)
 $(BUILD)/task_switch.o: src/task_switch.asm | $(BUILD)
 	$(NASM) $(NASMFLAGS) $< -o $@
 
+$(BUILD)/process_asm.o: src/process.asm | $(BUILD)
+	$(NASM) $(NASMFLAGS) $< -o $@
+
 $(BUILD)/hello-program.o: programs/hello.c programs/rks_api.h | $(BUILD)
 	$(CLANG) --target=x86_64-none-elf -m64 -std=c11 -O2 -Wall -Wextra -Werror \
 		-ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
@@ -121,6 +136,87 @@ $(BUILD)/hello.bin: $(BUILD)/hello-program.o programs/rks.ld
 $(BUILD)/HELLO.RKS: $(BUILD)/hello.bin tools/rksbuild.py | $(BUILD)
 	python3 tools/rksbuild.py $(BUILD)/hello.bin $@
 
+$(BUILD)/user_hello.o: programs/user_hello.c programs/user_syscall.h | $(BUILD)
+	$(CLANG) --target=x86_64-none-elf -m64 -std=c11 -O2 -Wall -Wextra -Werror \
+		-ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
+		-fno-asynchronous-unwind-tables -fno-unwind-tables -mno-red-zone \
+		-mno-sse -mno-sse2 -mno-mmx -mno-80387 -mcmodel=large -nostdlib -Iprograms \
+		-c $< -o $@
+
+$(USER_HELLO_ELF): $(BUILD)/user_hello.o programs/user.ld
+	$(LD_LLD) -m elf_x86_64 -T programs/user.ld --build-id=none -o $@ \
+		$(BUILD)/user_hello.o
+
+$(BUILD)/user_fork.o: programs/user_fork.c programs/user_syscall.h | $(BUILD)
+	$(CLANG) --target=x86_64-none-elf -m64 -std=c11 -O2 -Wall -Wextra -Werror \
+		-ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
+		-fno-asynchronous-unwind-tables -fno-unwind-tables -mno-red-zone \
+		-mno-sse -mno-sse2 -mno-mmx -mno-80387 -mcmodel=large -nostdlib -Iprograms \
+		-c $< -o $@
+
+$(USER_FORK_ELF): $(BUILD)/user_fork.o programs/user.ld
+	$(LD_LLD) -m elf_x86_64 -T programs/user.ld --build-id=none -o $@ \
+		$(BUILD)/user_fork.o
+
+$(BUILD)/user_fault.o: programs/user_fault.c programs/user_syscall.h | $(BUILD)
+	$(CLANG) --target=x86_64-none-elf -m64 -std=c11 -O2 -Wall -Wextra -Werror \
+		-ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
+		-fno-asynchronous-unwind-tables -fno-unwind-tables -mno-red-zone \
+		-mno-sse -mno-sse2 -mno-mmx -mno-80387 -mcmodel=large -nostdlib -Iprograms \
+		-c $< -o $@
+
+$(USER_FAULT_ELF): $(BUILD)/user_fault.o programs/user.ld
+	$(LD_LLD) -m elf_x86_64 -T programs/user.ld --build-id=none -o $@ \
+		$(BUILD)/user_fault.o
+
+$(BUILD)/user_exec.o: programs/user_exec.c programs/user_syscall.h | $(BUILD)
+	$(CLANG) --target=x86_64-none-elf -m64 -std=c11 -O2 -Wall -Wextra -Werror \
+		-ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
+		-fno-asynchronous-unwind-tables -fno-unwind-tables -mno-red-zone \
+		-mno-sse -mno-sse2 -mno-mmx -mno-80387 -mcmodel=large -nostdlib -Iprograms \
+		-c $< -o $@
+
+$(USER_EXEC_ELF): $(BUILD)/user_exec.o programs/user.ld
+	$(LD_LLD) -m elf_x86_64 -T programs/user.ld --build-id=none -o $@ \
+		$(BUILD)/user_exec.o
+
+$(BUILD)/user_io.o: programs/user_io.c programs/user_syscall.h | $(BUILD)
+	$(CLANG) --target=x86_64-none-elf -m64 -std=c11 -O2 -Wall -Wextra -Werror \
+		-ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
+		-fno-asynchronous-unwind-tables -fno-unwind-tables -mno-red-zone \
+		-mno-sse -mno-sse2 -mno-mmx -mno-80387 -mcmodel=large -nostdlib -Iprograms \
+		-c $< -o $@
+
+$(USER_IO_ELF): $(BUILD)/user_io.o programs/user.ld
+	$(LD_LLD) -m elf_x86_64 -T programs/user.ld --build-id=none -o $@ \
+		$(BUILD)/user_io.o
+
+$(BUILD)/user_pipe.o: programs/user_pipe.c programs/user_syscall.h | $(BUILD)
+	$(CLANG) --target=x86_64-none-elf -m64 -std=c11 -O2 -Wall -Wextra -Werror \
+		-ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
+		-fno-asynchronous-unwind-tables -fno-unwind-tables -mno-red-zone \
+		-mno-sse -mno-sse2 -mno-mmx -mno-80387 -mcmodel=large -nostdlib -Iprograms \
+		-c $< -o $@
+
+$(USER_PIPE_ELF): $(BUILD)/user_pipe.o programs/user.ld
+	$(LD_LLD) -m elf_x86_64 -T programs/user.ld --build-id=none -o $@ \
+		$(BUILD)/user_pipe.o
+
+$(MUSL_STAMP): scripts/fetch-musl.sh scripts/build-musl.sh | $(BUILD)
+	./scripts/build-musl.sh
+
+$(BUILD)/musl_hello.o: programs/musl_hello.c $(MUSL_STAMP) | $(BUILD)
+	$(CLANG) --target=x86_64-none-elf -m64 -mcmodel=large -std=c11 -O2 \
+		-Wall -Wextra -Werror -fno-pic -fno-pie -fno-stack-protector \
+		-ffreestanding -mno-red-zone -fno-asynchronous-unwind-tables \
+		-fno-unwind-tables -nostdinc -isystem $(MUSL_STAGE)/include \
+		-c $< -o $@
+
+$(MUSL_ELF): $(BUILD)/musl_hello.o $(MUSL_STAMP) programs/user.ld
+	$(LD_LLD) -m elf_x86_64 -T programs/user.ld --build-id=none \
+		--gc-sections -o $@ $(MUSL_STAGE)/lib/crt1.o \
+		$(BUILD)/musl_hello.o $(MUSL_STAGE)/lib/libc.a
+
 $(BUILD)/%.o: src/%.c | $(BUILD)
 	$(CLANG) $(CFLAGS) -c $< -o $@
 
@@ -133,6 +229,9 @@ font:
 
 fs2:
 	@./scripts/fetch-littlefs.sh
+
+musl:
+	@./scripts/build-musl.sh
 
 keys: | $(BUILD)
 	@./scripts/gen-ssh-keys.sh
@@ -153,8 +252,10 @@ $(BUILD)/kernel.elf: $(OBJECTS) linker.ld
 $(BUILD)/kernel.bin: $(BUILD)/kernel.elf
 	$(OBJCOPY) -O binary $< $@
 
-$(BUILD)/fs2-root/.stamp: $(BUILD)/HELLO.RKS tools/make-fs2-root.py | $(BUILD)
-	python3 tools/make-fs2-root.py $(BUILD)/fs2-root $(BUILD)/HELLO.RKS
+$(BUILD)/fs2-root/.stamp: $(BUILD)/HELLO.RKS $(USER_ELVES) \
+	tools/make-fs2-root.py $(MUSL_STAMP) | $(BUILD)
+	python3 tools/make-fs2-root.py $(BUILD)/fs2-root $(BUILD)/HELLO.RKS \
+		$(USER_ELVES) --musl $(MUSL_STAGE) --license third_party/musl/COPYRIGHT
 	touch $@
 
 $(BUILD)/mkfs2: tools/mkfs2.c third_party/littlefs/lfs.c third_party/littlefs/lfs_util.c | fs2 $(BUILD)
@@ -165,7 +266,7 @@ $(FS2_IMAGE): $(BUILD)/mkfs2 $(BUILD)/fs2-root/.stamp
 	$(BUILD)/mkfs2 $@ $(BUILD)/fs2-root
 
 image: $(BUILD)/boot.bin $(BUILD)/stage2.bin $(BUILD)/kernel.bin \
-	$(BUILD)/HELLO.RKS $(FS2_IMAGE)
+	$(BUILD)/HELLO.RKS $(USER_ELVES) $(FS2_IMAGE)
 	@size=$$(wc -c < $(BUILD)/kernel.bin | tr -d ' '); \
 	if [ "$$size" -gt "$(KERNEL_MAX_BYTES)" ]; then \
 		echo "Kernel is $$size bytes; boot limit is $(KERNEL_MAX_BYTES)." >&2; \
@@ -205,7 +306,7 @@ term: image
 	if [ $$status -ne 0 ] && [ $$status -ne 33 ]; then exit $$status; fi
 
 test: $(BUILD)/boot.bin $(BUILD)/stage2.bin $(BUILD)/kernel.bin \
-	$(BUILD)/HELLO.RKS $(FS2_IMAGE)
+	$(BUILD)/HELLO.RKS $(USER_ELVES) $(FS2_IMAGE)
 	@test -n "$(QEMU)" || (echo "Install QEMU: brew install qemu" >&2; exit 1)
 	./scripts/test-cklos.sh
 

@@ -5,6 +5,7 @@
 #include "memory.h"
 #include "mouse.h"
 #include "network.h"
+#include "process.h"
 #include "rks.h"
 #include "shell.h"
 #include "tasks.h"
@@ -23,6 +24,7 @@ void kernel_main(const boot_info *info) {
     mouse_init();
     interrupts_init();
     tasks_init();
+    process_init();
     console_set_color(COLOR_LIGHT_GRAY, COLOR_BLACK);
     console_write(
         "\n"

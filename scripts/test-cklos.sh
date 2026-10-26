@@ -105,6 +105,22 @@ set +e
     sleep 0.2
     printf 'fscat /home/cklos/deep/中文/你好.txt\r'
     sleep 0.2
+    printf 'elfexec /bin/USERHELLO.ELF\r'
+    sleep 0.8
+    printf 'elfexec /bin/USERFORK.ELF\r'
+    sleep 1
+    printf 'elfexec /bin/USERFAULT.ELF\r'
+    sleep 0.5
+    printf 'elfexec /bin/USEREXEC.ELF\r'
+    sleep 1
+    printf 'elfexec /bin/USERIO.ELF\r'
+    sleep 0.8
+    printf 'elfexec /bin/USERPIPE.ELF\r'
+    sleep 1
+    printf 'elfexec /bin/MUSLHELLO.ELF\r'
+    sleep 1
+    printf 'fscat /home/cklos/user-io.txt\r'
+    sleep 0.2
     printf 'shutdown\r'
     sleep 1
 } | "$QEMU" \
@@ -132,9 +148,9 @@ if [ "$status" -ne 33 ] && [ "$status" -ne 0 ]; then
 fi
 
 for expected in \
-    'CKLOS 0.8.0 kernel is running' \
+    'CKLOS 0.9.0 kernel is running' \
     'CKLOS>' \
-    'OS        CKLOS 0.8.0' \
+    'OS        CKLOS 0.9.0' \
     'PIT 100 Hz' \
     'Uptime' \
     'Heap allocator: PASS' \
@@ -166,6 +182,16 @@ for expected in \
     'FSCHECK: metadata valid' \
     'persistence survives reboot' \
     '你好 CKLOS' \
+    'CKLOS ring-3 ELF64 user program is running.' \
+    'Cooperative user-mode system call round trip complete.' \
+    'child: fork returned 0' \
+    'parent: waited pid' \
+    'terminated by exception 14' \
+    'execve and wait completed' \
+    'read back: CKLOS user file I/O' \
+    'parent read: pipe across fork' \
+    'CKLOS musl static libc is running.' \
+    'pid=' \
     'Shutting down CKLOS'
 do
     if ! grep -F "$expected" "$LOG" >/dev/null; then

@@ -30,3 +30,43 @@ for path in ("bin", "etc", "home/cklos", "import", "usr/include", "usr/lib"):
     "df\n"
 )
 shutil.copy2(hello, root / "bin" / "HELLO.RKS")
+executables = []
+musl_root = None
+license = None
+arguments = sys.argv[3:]
+index = 0
+while index < len(arguments):
+    argument = arguments[index]
+    if argument == "--musl":
+        index += 1
+        musl_root = pathlib.Path(arguments[index])
+    elif argument == "--license":
+        index += 1
+        license = pathlib.Path(arguments[index])
+    else:
+        executables.append(pathlib.Path(argument))
+    index += 1
+
+for executable in executables:
+    shutil.copy2(executable, root / "bin" / executable.name)
+
+if musl_root is not None:
+    include_target = root / "usr" / "include"
+    library_target = root / "usr" / "lib"
+    for item in (musl_root / "include").iterdir():
+        target = include_target / item.name
+        if item.is_dir():
+            shutil.copytree(item, target, dirs_exist_ok=True)
+        else:
+            shutil.copy2(item, target)
+    for item in (musl_root / "lib").iterdir():
+        target = library_target / item.name
+        if item.is_dir():
+            shutil.copytree(item, target, dirs_exist_ok=True)
+        else:
+            shutil.copy2(item, target)
+
+if license is not None:
+    license_target = root / "usr" / "share" / "licenses" / "musl"
+    license_target.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(license, license_target / "COPYRIGHT")
