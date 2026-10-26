@@ -30,6 +30,7 @@ uint32_t vfs_count(void);
 const virtual_file *vfs_at(uint32_t index);
 const virtual_file *vfs_find(const char *name);
 int vfs_write(const char *name, const char *text, bool append);
+int vfs_add(const char *name, const void *content, uint32_t size, bool read_only);
 int vfs_touch(const char *name);
 int vfs_remove(const char *name);
 int vfs_rename(const char *old_name, const char *new_name);

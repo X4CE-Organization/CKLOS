@@ -2,6 +2,15 @@
 
 All notable changes to CKLOS are documented here.
 
+## 0.7.0 — 2026-10-26
+
+### Added
+
+- RKS1 x86-64 executable format with version, size and checksum validation.
+- Runtime loader and ABI for text, timers, sleep and mouse access.
+- External `HELLO.RKS` executable stored in CKLOSFS.
+- `EXEC` and `RKS` shell commands.
+
 ## 0.6.0 — 2026-10-25
 
 ### Added

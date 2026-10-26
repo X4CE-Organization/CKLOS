@@ -4,6 +4,7 @@
 #include "memory.h"
 #include "mouse.h"
 #include "network.h"
+#include "rks.h"
 #include "shell.h"
 #include "tasks.h"
 #include "vfs.h"
@@ -13,6 +14,7 @@ void kernel_main(const boot_info *info) {
     console_init();
     memory_init(info);
     vfs_init();
+    rks_init();
     disk_init();
     disk_load_filesystem();
     network_init();

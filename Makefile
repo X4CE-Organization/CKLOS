@@ -4,7 +4,7 @@ SHELL := /bin/sh
 BUILD := build
 IMAGE := $(BUILD)/cklos.img
 DATA_IMAGE := $(BUILD)/cklos-data.img
-KERNEL_MAX_BYTES := 65024
+KERNEL_MAX_BYTES := 51200
 VERSION := $(shell grep 'CKLOS_VERSION "' src/version.h | cut -d '"' -f2)
 
 NASM ?= $(shell command -v nasm 2>/dev/null)
@@ -29,7 +29,7 @@ HOST_SSH_PORT ?= 2222
 NETWORK_ARGS := -netdev user,id=net0,hostfwd=tcp:127.0.0.1:$(HOST_SSH_PORT)-:22 \
 	-device rtl8139,netdev=net0,mac=52:54:00:12:34:56
 
-CFLAGS := --target=x86_64-none-elf -m64 -std=c11 -O2 -Wall -Wextra -Werror \
+CFLAGS := --target=x86_64-none-elf -m64 -std=c11 -Os -Wall -Wextra -Werror \
 	-ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
 	-fno-asynchronous-unwind-tables -fno-unwind-tables -mno-sse -mno-sse2 \
 	-mno-mmx -mno-80387 -mno-red-zone -mcmodel=large -nostdlib -MMD -MP \
@@ -49,7 +49,7 @@ CRYPTO_CFLAGS := --target=x86_64-none-elf -m64 -std=c11 -O2 \
 
 C_SOURCES := src/kernel.c src/console.c src/serial.c src/keyboard.c \
 	src/string.c src/memory.c src/vfs.c src/disk.c src/interrupts.c \
-	src/network.c src/gui.c src/mouse.c src/tasks.c src/shell.c
+	src/network.c src/gui.c src/mouse.c src/rks.c src/tasks.c src/shell.c
 C_OBJECTS := $(patsubst src/%.c,$(BUILD)/%.o,$(C_SOURCES))
 VENDOR_SOURCES := \
 	third_party/monocypher/src/monocypher.c \
@@ -98,6 +98,19 @@ $(BUILD)/interrupt_stubs.o: src/interrupt_stubs.asm | $(BUILD)
 $(BUILD)/task_switch.o: src/task_switch.asm | $(BUILD)
 	$(NASM) $(NASMFLAGS) $< -o $@
 
+$(BUILD)/hello-program.o: programs/hello.c programs/rks_api.h | $(BUILD)
+	$(CLANG) --target=x86_64-none-elf -m64 -std=c11 -O2 -Wall -Wextra -Werror \
+		-ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
+		-fno-asynchronous-unwind-tables -fno-unwind-tables -mno-red-zone \
+		-mcmodel=large -nostdlib -Iprograms -c $< -o $@
+
+$(BUILD)/hello.bin: $(BUILD)/hello-program.o programs/rks.ld
+	$(LD_LLD) -m elf_x86_64 -T programs/rks.ld --build-id=none \
+		--oformat=binary -o $@ $(BUILD)/hello-program.o
+
+$(BUILD)/HELLO.RKS: $(BUILD)/hello.bin tools/rksbuild.py | $(BUILD)
+	python3 tools/rksbuild.py $(BUILD)/hello.bin $@
+
 $(BUILD)/%.o: src/%.c | $(BUILD)
 	$(CLANG) $(CFLAGS) -c $< -o $@
 
@@ -125,7 +138,7 @@ $(BUILD)/kernel.elf: $(OBJECTS) linker.ld
 $(BUILD)/kernel.bin: $(BUILD)/kernel.elf
 	$(OBJCOPY) -O binary $< $@
 
-image: $(BUILD)/boot.bin $(BUILD)/kernel.bin
+image: $(BUILD)/boot.bin $(BUILD)/kernel.bin $(BUILD)/HELLO.RKS
 	@size=$$(wc -c < $(BUILD)/kernel.bin | tr -d ' '); \
 	if [ "$$size" -gt "$(KERNEL_MAX_BYTES)" ]; then \
 		echo "Kernel is $$size bytes; boot limit is $(KERNEL_MAX_BYTES)." >&2; \
@@ -137,6 +150,7 @@ image: $(BUILD)/boot.bin $(BUILD)/kernel.bin
 	@if [ ! -f "$(DATA_IMAGE)" ]; then \
 		dd if=/dev/zero of=$(DATA_IMAGE) bs=512 count=4096 2>/dev/null; \
 	fi
+	python3 tools/install-rks-disk.py $(DATA_IMAGE) $(BUILD)/HELLO.RKS HELLO.RKS
 	@echo "Built $(IMAGE) (1.44 MB bootable x86 image)"
 
 run: image
@@ -160,7 +174,7 @@ term: image
 		-display none -serial stdio -monitor none -device isa-debug-exit || status=$$?; \
 	if [ $$status -ne 0 ] && [ $$status -ne 33 ]; then exit $$status; fi
 
-test: image
+test: $(BUILD)/boot.bin $(BUILD)/kernel.bin $(BUILD)/HELLO.RKS
 	@test -n "$(QEMU)" || (echo "Install QEMU: brew install qemu" >&2; exit 1)
 	./scripts/test-cklos.sh
 

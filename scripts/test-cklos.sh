@@ -15,8 +15,16 @@ if [ -z "$QEMU" ]; then
     exit 1
 fi
 
-cp "$IMAGE" "$TEST_IMAGE"
-cp "$DATA_IMAGE" "$TEST_DATA_IMAGE"
+dd if=/dev/zero of="$TEST_IMAGE" bs=512 count=2880 2>/dev/null
+dd if="$ROOT/build/boot.bin" of="$TEST_IMAGE" conv=notrunc bs=512 seek=0 2>/dev/null
+dd if="$ROOT/build/kernel.bin" of="$TEST_IMAGE" conv=notrunc bs=512 seek=1 2>/dev/null
+if [ -f "$DATA_IMAGE" ]; then
+    cp "$DATA_IMAGE" "$TEST_DATA_IMAGE"
+else
+    dd if=/dev/zero of="$TEST_DATA_IMAGE" bs=512 count=4096 2>/dev/null
+fi
+python3 "$ROOT/tools/install-rks-disk.py" \
+    "$TEST_DATA_IMAGE" "$ROOT/build/HELLO.RKS" HELLO.RKS
 
 set +e
 {
@@ -34,6 +42,8 @@ set +e
     printf 'tasks\r'
     sleep 0.3
     printf 'run DEMO.CKL\r'
+    sleep 0.5
+    printf 'exec HELLO.RKS\r'
     sleep 0.5
     printf 'cp MOTD.TXT COPY.TXT\r'
     sleep 0.2
@@ -95,9 +105,9 @@ if [ "$status" -ne 33 ] && [ "$status" -ne 0 ]; then
 fi
 
 for expected in \
-    'CKLOS 0.6.0 kernel is running' \
+    'CKLOS 0.7.0 kernel is running' \
     'CKLOS>' \
-    'OS        CKLOS 0.6.0' \
+    'OS        CKLOS 0.7.0' \
     'PIT 100 Hz' \
     'Uptime' \
     'Heap allocator: PASS' \
@@ -106,6 +116,8 @@ for expected in \
     'worker-' \
     'Running DEMO.CKL' \
     'CKLOS script engine is active.' \
+    'RKS executable is running!' \
+    'RKS programs are standalone binaries loaded at runtime.' \
     'Copied MOTD.TXT to COPY.TXT' \
     '3 lines  18 words  120 bytes  COPY.TXT' \
     'A compact command-line operating system built from scratch.' \
@@ -120,7 +132,7 @@ for expected in \
     'RAM disk' \
     'history' \
     '294' \
-    'Saved 1 user file(s)' \
+    'Saved 2 user file(s)' \
     'Shutting down CKLOS'
 do
     if ! grep -F "$expected" "$LOG" >/dev/null; then
@@ -164,7 +176,7 @@ if [ "$status" -ne 33 ] && [ "$status" -ne 0 ]; then
 fi
 
 for expected in \
-    'Saved     1 user file(s)' \
+    'Saved     2 user file(s)' \
     'persistence survives reboot'
 do
     if ! grep -F "$expected" "$PERSIST_LOG" >/dev/null; then

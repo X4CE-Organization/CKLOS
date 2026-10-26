@@ -221,7 +221,8 @@ bool disk_load_filesystem(void) {
             return false;
         }
         sector_buffer[size] = '\0';
-        if (vfs_write(name, (const char *)sector_buffer, false) != VFS_OK) {
+        bool read_only = (record->flags & 0x80000000U) != 0;
+        if (vfs_add(name, sector_buffer, size, read_only) != VFS_OK) {
             return false;
         }
     }

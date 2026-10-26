@@ -60,6 +60,31 @@ static int add_file(const char *name, const char *content, bool read_only) {
     return VFS_NO_SPACE;
 }
 
+int vfs_add(const char *name, const void *content, uint32_t size, bool read_only) {
+    char normalized[VFS_NAME_CAPACITY];
+    if (!normalize_name(name, normalized)) {
+        return VFS_INVALID_NAME;
+    }
+    if (find_mutable(normalized)) {
+        return VFS_NAME_EXISTS;
+    }
+    if (size > VFS_CONTENT_CAPACITY) {
+        return VFS_CONTENT_TOO_LARGE;
+    }
+    for (uint32_t index = 0; index < VFS_MAX_FILES; index++) {
+        if (!files[index].used) {
+            files[index].used = true;
+            files[index].read_only = read_only;
+            files[index].size = size;
+            strcpy(files[index].name, normalized);
+            memcpy(files[index].content, content, size);
+            files[index].content[size] = '\0';
+            return VFS_OK;
+        }
+    }
+    return VFS_NO_SPACE;
+}
+
 void vfs_init(void) {
     memset(files, 0, sizeof(files));
     add_file(

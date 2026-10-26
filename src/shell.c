@@ -6,6 +6,7 @@
 #include "memory.h"
 #include "mouse.h"
 #include "network.h"
+#include "rks.h"
 #include "shell.h"
 #include "string.h"
 #include "tasks.h"
@@ -129,6 +130,7 @@ static void command_help(void) {
         "  DISK / DISKSAVE   Inspect or save files to the ATA data disk\n"
         "  DISKLOAD          Reload saved user files from the ATA disk\n"
         "  RUN FILE.CKL      Execute a text command script\n"
+        "  EXEC FILE.RKS     Load and execute an RKS binary\n"
         "  ECHO TEXT         Print text\n"
         "  CALC A OP B       Integer arithmetic (+ - * / % & | ^ << >>)\n"
         "  COLOR NAME        Theme: cyan green amber blue white red\n"
@@ -881,6 +883,20 @@ static void command_run(int argc) {
     console_printf("Finished %s.\n", file->name);
 }
 
+static void command_exec(int argc) {
+    if (argc != 2) {
+        console_write("Usage: EXEC FILE.RKS\n");
+        return;
+    }
+    rks_run(arguments[1]);
+}
+
+static void command_rks(void) {
+    console_printf("RKS1 executable runtime\nInstalled images: %u\n"
+                   "Example: EXEC HELLO.RKS\n",
+                   rks_installed_count());
+}
+
 static void join_arguments(int first, int argc, char *output, uint32_t capacity) {
     uint32_t length = 0;
     output[0] = '\0';
@@ -1127,6 +1143,10 @@ static void run_command(int argc) {
         command_diskload();
     } else if (strcmp(arguments[0], "run") == 0) {
         command_run(argc);
+    } else if (strcmp(arguments[0], "exec") == 0) {
+        command_exec(argc);
+    } else if (strcmp(arguments[0], "rks") == 0) {
+        command_rks();
     } else if (strcmp(arguments[0], "write") == 0) {
         command_write(argc, false);
     } else if (strcmp(arguments[0], "append") == 0) {

@@ -22,12 +22,13 @@ BIOS -> CKLOS 自写引导扇区 -> x86-64 长模式 -> C 内核 -> CKLOS GUI
 - VGA mode 13h 320×200 图形帧缓冲、窗口式终端、COM1 串口、PS/2 键盘和 PS/2 鼠标
 - 命令历史、上下方向键调用、Ctrl+L 清屏和 Ctrl+C 取消
 - `.CKL` 文本命令脚本、文件复制、内容统计和首尾行查看
+- RKS1 x86-64 可执行格式、运行时校验和加载以及程序 API
 - 可写 12 KiB 内存文件系统，内置只读系统文件
 - ATA PIO 数据盘和 CKLOSFS1 持久化格式，用户文件可跨重启保存
 - CMOS 实时时钟、CPU 信息、内存布局和设备诊断
 - 整数计算、十六进制查看、颜色主题和 PC 扬声器测试
 
-这是 CKLOS 0.6.0 的开源 x86-64 图形内核版本。它已经有长模式、分页、任务切换、持久化存储、RTL8139 网络、图形终端和可操作鼠标，但还不是 Linux 那样的完整通用操作系统：用户态隔离、POSIX 系统调用、完整驱动模型、SSH、USB 和完整桌面尚未实现。
+这是 CKLOS 0.7.0 的开源 x86-64 图形内核版本。它已经有长模式、分页、任务切换、持久化存储、RTL8139 网络、图形终端、可操作鼠标和 RKS 可执行文件，但还不是 Linux 那样的完整通用操作系统：用户态隔离、POSIX 系统调用、完整驱动模型、SSH、USB 和完整桌面尚未实现。
 
 ## 安装依赖
 
@@ -108,6 +109,8 @@ make test
 | `diskload` | 从 ATA 数据盘重新载入用户文件 |
 | `run DEMO.CKL` | 执行内置演示脚本 |
 | `run FILE.CKL` | 执行用户命令脚本，支持最多四层嵌套 |
+| `exec HELLO.RKS` | 校验并执行 RKS1 可执行文件 |
+| `rks` | 显示 RKS 运行时和已安装程序数量 |
 | `calc 42 '*' 7` | 支持加减乘除、取余、位运算和移位 |
 | `color green` | 切换终端主题 |
 | `date` / `time` | 读取 CMOS 实时时钟 |
@@ -115,6 +118,19 @@ make test
 | `shutdown` / `reboot` / `halt` | 关机、重启或停止 CPU |
 
 方向键上下可以调用历史命令。命令和文件名不区分大小写；`cat`、`write` 等命令会保留文本参数中的大小写。
+
+## RKS 可执行文件
+
+`HELLO.RKS` 是真正的外部可执行文件，存放在 CKLOSFS 数据盘，不编入内核。运行时加载器会验证 `RKS1` 魔数、版本、入口、大小和校验和，再把程序装载到 `0x00300000` 执行。
+
+```text
+CKLOS> ls
+HELLO.RKS  313 bytes  [RW]
+CKLOS> exec HELLO.RKS
+RKS executable is running!
+```
+
+示例源码位于 `programs/hello.c`，ABI 在 `programs/rks_api.h`。程序使用 `rks_api` 获取输出、清屏、计时、延时和鼠标坐标。当前 RKS 程序仍运行在 ring 0，尚未提供用户态隔离。
 
 ## SSH 开发状态
 

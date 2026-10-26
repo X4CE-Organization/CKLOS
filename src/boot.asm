@@ -14,7 +14,7 @@ start:
     mov es, ax
     xor bx, bx
     mov word [current_lba], 1
-    mov word [sectors_left], 127
+    mov word [sectors_left], 100
 
 .load:
     mov ax, [current_lba]
@@ -116,7 +116,7 @@ bios_print:
 msg_error db "CKLOS I/O error", 13, 10, 0
 boot_drive db 0
 current_lba dw 1
-sectors_left dw 127
+sectors_left dw 100
 sector db 0
 head db 0
 saved_es dw 0

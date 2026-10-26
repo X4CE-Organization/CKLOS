@@ -14,7 +14,8 @@
 - [ ] User code/data GDT entries and TSS
 - [ ] Per-process address spaces with 4 KiB U/S page tables
 - [ ] System-call gate and ABI documentation
-- [ ] ELF32 loader and process lifecycle
+- [x] Flat RKS1 executable loader and runtime ABI
+- [ ] ELF64 loader and isolated process lifecycle
 - [ ] Fault isolation between processes
 
 ## 0.6 — Device and file-system layer
