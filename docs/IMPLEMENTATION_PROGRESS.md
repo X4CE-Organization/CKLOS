@@ -6,8 +6,8 @@ This file is the source of truth for the batched native-toolchain implementation
 | --- | --- | --- |
 | CKLOSFS2 and directories | 0.8.0 | complete and tested |
 | ELF64, ring 3, syscalls, libc | 0.9.0 | complete and tested |
-| TinyCC and cck | 0.10.0 | next |
-| VBE, Unicode and cki | 0.11.0 | pending |
+| TinyCC and cck | 0.10.0 | complete and tested |
+| VBE, Unicode and cki | 0.11.0 | next |
 | IPv4/IPv6, cwgt and curl | 0.12.0 | pending |
 | Clang/GCC C++ evaluation | 0.13.0 | pending |
 
@@ -65,3 +65,30 @@ Verification:
 - User file open/write/read/close through CKLOSFS2.
 - Supervisor-memory access terminates the process with `make test` still passing.
 - Static musl `printf`, `malloc`, `strcpy`, `getpid` and buffered output.
+
+## 0.10.0 checkpoint
+
+Completed:
+
+- Pinned TinyCC `e23dabed154a8495f3ac1ff3cc9d04fa1c207893`.
+- Native ring-3 `/bin/cck` linked against CKLOS's static musl.
+- Shell-compatible `CCK` command with argument passing and compiler options.
+- Accepted modes from C89/C90 through C17/C23 and matching GNU modes.
+- Explicit `-std=c98` rejection with a C++98 diagnostic.
+- Static ELF64 output and default `a.rks` output.
+- RKS2 header, version, payload size, flags and BearSSL SHA-256 verification.
+- Kernel execution of RKS2 by extracting and validating the enclosed ELF64.
+- CKLOS SDK headers for `<stdbit.h>` and `<stdckdint.h>`.
+- TinyCC and musl runtime, headers, archives and license files in CKLOSFS2.
+
+Verification:
+
+- All declared standard/GNU modes compile the bundled C test.
+- `cck` creates `a.rks` with no `-o`.
+- The generated RKS2 runs in ring 3 and prints through musl stdio.
+
+Known limitation:
+
+- TinyCC does not implement the entire C23 language surface. The modes and
+  headers are installed, but full external conformance-suite coverage remains
+  ongoing rather than being represented as ISO certification.

@@ -119,6 +119,36 @@ set +e
     sleep 1
     printf 'elfexec /bin/MUSLHELLO.ELF\r'
     sleep 1
+    printf 'cck -v\r'
+    sleep 0.2
+    printf 'cck -std=c98 /home/cklos/cck_hello.c\r'
+    sleep 0.2
+    printf 'cck -std=c89 -c -o /home/cklos/cklos-c89.o /home/cklos/cck_hello.c\r'
+    sleep 1
+    printf 'cck -std=gnu89 -c -o /home/cklos/cklos-gnu89.o /home/cklos/cck_hello.c\r'
+    sleep 1
+    printf 'cck -std=c99 -c -o /home/cklos/cklos-c99.o /home/cklos/cck_hello.c\r'
+    sleep 1
+    printf 'cck -std=gnu99 -c -o /home/cklos/cklos-gnu99.o /home/cklos/cck_hello.c\r'
+    sleep 1
+    printf 'cck -std=c11 -c -o /home/cklos/cklos-c11.o /home/cklos/cck_hello.c\r'
+    sleep 1
+    printf 'cck -std=gnu11 -c -o /home/cklos/cklos-gnu11.o /home/cklos/cck_hello.c\r'
+    sleep 1
+    printf 'cck -std=c17 -c -o /home/cklos/cklos-c17.o /home/cklos/cck_hello.c\r'
+    sleep 1
+    printf 'cck -std=gnu17 -c -o /home/cklos/cklos-gnu17.o /home/cklos/cck_hello.c\r'
+    sleep 1
+    printf 'cck -std=c23 -c -o /home/cklos/cklos-c23.o /home/cklos/cck_hello.c\r'
+    sleep 1
+    printf 'cck -std=gnu23 -c -o /home/cklos/cklos-gnu23.o /home/cklos/cck_hello.c\r'
+    sleep 1
+    printf 'fsls /home/cklos\r'
+    sleep 0.2
+    printf 'cck /home/cklos/cck_hello.c\r'
+    sleep 12
+    printf 'elfexec /a.rks\r'
+    sleep 4
     printf 'fscat /home/cklos/user-io.txt\r'
     sleep 0.2
     printf 'shutdown\r'
@@ -148,9 +178,9 @@ if [ "$status" -ne 33 ] && [ "$status" -ne 0 ]; then
 fi
 
 for expected in \
-    'CKLOS 0.9.0 kernel is running' \
+    'CKLOS 0.10.0 kernel is running' \
     'CKLOS>' \
-    'OS        CKLOS 0.9.0' \
+    'OS        CKLOS 0.10.0' \
     'PIT 100 Hz' \
     'Uptime' \
     'Heap allocator: PASS' \
@@ -192,6 +222,20 @@ for expected in \
     'parent read: pipe across fork' \
     'CKLOS musl static libc is running.' \
     'pid=' \
+    'cck 0.10 (TinyCC backend 0.9.28rc)' \
+    'CCK: C98 is not a C standard.' \
+    'cklos-c89.o' \
+    'cklos-gnu89.o' \
+    'cklos-c99.o' \
+    'cklos-gnu99.o' \
+    'cklos-c11.o' \
+    'cklos-gnu11.o' \
+    'cklos-c17.o' \
+    'cklos-gnu17.o' \
+    'cklos-c23.o' \
+    'cklos-gnu23.o' \
+    'CCK: wrote verified RKS2 executable a.rks.' \
+    'cck compiled this ELF64 program on CKLOS.' \
     'Shutting down CKLOS'
 do
     if ! grep -F "$expected" "$LOG" >/dev/null; then

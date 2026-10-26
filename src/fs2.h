@@ -15,6 +15,8 @@ int fs2_set_cwd(const char *path);
 const char *fs2_get_cwd(void);
 int fs2_list(const char *path, fs2_list_callback callback);
 int fs2_read(const char *path, void *buffer, uint32_t capacity, uint32_t *size);
+int fs2_read_at(const char *path, uint32_t offset, void *buffer,
+                uint32_t capacity, uint32_t *size);
 int fs2_write(const char *path, const void *data, uint32_t size, bool append);
 int fs2_mkdir(const char *path);
 int fs2_remove(const char *path);

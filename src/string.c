@@ -73,6 +73,16 @@ char *strchr(const char *text, int character) {
     return character == 0 ? (char *)text : 0;
 }
 
+char *strstr(const char *text, const char *needle) {
+    if (!*needle) return (char *)text;
+    size_t length = strlen(needle);
+    while (*text) {
+        if (strncmp(text, needle, length) == 0) return (char *)text;
+        text++;
+    }
+    return 0;
+}
+
 size_t strspn(const char *text, const char *accepted) {
     size_t count = 0;
     while (text[count]) {

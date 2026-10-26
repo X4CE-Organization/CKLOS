@@ -8,6 +8,7 @@
 #include "mouse.h"
 #include "network.h"
 #include "process.h"
+#include "rks2.h"
 #include "rks.h"
 #include "shell.h"
 #include "string.h"
@@ -136,6 +137,7 @@ static void command_help(void) {
         "  EXEC FILE.RKS     Load and execute an RKS binary\n"
         "  ELFEXEC FILE.ELF  Run a static ELF64 program in ring 3\n"
         "  PROCS             Show isolated process count and current PID\n"
+        "  CCK ARGS          Run the native TinyCC-based C compiler\n"
         "  FSLS / FSCD       Browse the CKLOSFS2 directory tree\n"
         "  FSWRITE / FSCAT   Write or read CKLOSFS2 files\n"
         "  FSFILL FILE BYTES Create a variable-length test file\n"
@@ -914,6 +916,62 @@ static void command_processes(void) {
                    process_count(), process_current_pid());
 }
 
+static void command_cck(int argc) {
+    if (argc == 2
+        && (strcmp(arguments[1], "-v") == 0
+            || strcmp(arguments[1], "--version") == 0)) {
+        console_write("cck 0.10 (TinyCC backend 0.9.28rc)\n");
+        return;
+    }
+    const char *user_argv[MAX_ARGS + 4];
+    int user_argc = 1;
+    user_argv[0] = "cck";
+    const char *output = 0;
+    bool has_text_address = false;
+    bool compile_only = false;
+    bool preprocess_only = false;
+    bool information_only = false;
+    for (int index = 1; index < argc; index++) {
+        if (strcmp(arguments[index], "-std=c98") == 0) {
+            console_write("CCK: C98 is not a C standard. C++98 uses a C++ frontend.\n");
+            return;
+        }
+        if (strcmp(arguments[index], "-c") == 0) compile_only = true;
+        if (strcmp(arguments[index], "-E") == 0) preprocess_only = true;
+        if (strcmp(arguments[index], "-v") == 0
+            || strcmp(arguments[index], "--version") == 0
+            || strcmp(arguments[index], "-h") == 0
+            || strcmp(arguments[index], "-hh") == 0
+            || strcmp(arguments[index], "-print-search-dirs") == 0) {
+            information_only = true;
+        }
+        if (strcmp(arguments[index], "-o") == 0 && index + 1 < argc) {
+            output = arguments[index + 1];
+        }
+        if (strstr(arguments[index], "Ttext=")) has_text_address = true;
+        user_argv[user_argc++] = arguments[index];
+    }
+    if (!has_text_address && !compile_only && !preprocess_only && !information_only) {
+        user_argv[user_argc++] = "-Wl,-Ttext=0x4000000000";
+    }
+    if (!output && !compile_only && !preprocess_only && !information_only) {
+        output = "a.rks";
+        user_argv[user_argc++] = "-o";
+        user_argv[user_argc++] = output;
+    }
+    int result = process_run_elf_args("/bin/cck", user_argc, user_argv);
+    if (result == 0 && output) {
+        uint32_t length = (uint32_t)strlen(output);
+        if (length > 4 && strcmp(output + length - 4, ".rks") == 0) {
+            if (rks2_wrap_file(output)) {
+                console_printf("CCK: wrote verified RKS2 executable %s.\n", output);
+            } else {
+                console_write("CCK: failed to create RKS2 container.\n");
+            }
+        }
+    }
+}
+
 static void command_rks(void) {
     console_printf("RKS1 executable runtime\nInstalled images: %u\n"
                    "Example: EXEC HELLO.RKS\n",
@@ -1335,6 +1393,8 @@ static void run_command(int argc) {
         command_elfexec(argc);
     } else if (strcmp(arguments[0], "procs") == 0) {
         command_processes();
+    } else if (strcmp(arguments[0], "cck") == 0) {
+        command_cck(argc);
     } else if (strcmp(arguments[0], "rks") == 0) {
         command_rks();
     } else if (strcmp(arguments[0], "fsls") == 0) {

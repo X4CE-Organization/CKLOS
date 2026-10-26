@@ -33,6 +33,10 @@ shutil.copy2(hello, root / "bin" / "HELLO.RKS")
 executables = []
 musl_root = None
 license = None
+toolchain = None
+sample = None
+sdk = None
+tinycc_license = None
 arguments = sys.argv[3:]
 index = 0
 while index < len(arguments):
@@ -43,6 +47,18 @@ while index < len(arguments):
     elif argument == "--license":
         index += 1
         license = pathlib.Path(arguments[index])
+    elif argument == "--toolchain":
+        index += 1
+        toolchain = pathlib.Path(arguments[index])
+    elif argument == "--sample":
+        index += 1
+        sample = pathlib.Path(arguments[index])
+    elif argument == "--sdk":
+        index += 1
+        sdk = pathlib.Path(arguments[index])
+    elif argument == "--tinycc-license":
+        index += 1
+        tinycc_license = pathlib.Path(arguments[index])
     else:
         executables.append(pathlib.Path(argument))
     index += 1
@@ -65,6 +81,29 @@ if musl_root is not None:
             shutil.copytree(item, target, dirs_exist_ok=True)
         else:
             shutil.copy2(item, target)
+
+    triplet_target = library_target / "x86_64-linux-gnu"
+    triplet_target.mkdir(parents=True, exist_ok=True)
+    for name in ("crt1.o", "crti.o", "crtn.o"):
+        shutil.copy2(musl_root / "lib" / name, triplet_target / name)
+
+if toolchain is not None:
+    shutil.copy2(toolchain / "bin" / "cck", root / "bin" / "cck")
+    tcc_target = root / "usr" / "lib" / "tcc"
+    if tcc_target.exists():
+        shutil.rmtree(tcc_target)
+    shutil.copytree(toolchain / "lib" / "tcc", tcc_target)
+
+if sample is not None:
+    shutil.copy2(sample, root / "home" / "cklos" / "cck_hello.c")
+
+if sdk is not None:
+    shutil.copytree(sdk, root / "usr" / "include", dirs_exist_ok=True)
+
+if tinycc_license is not None:
+    target = root / "usr" / "share" / "licenses" / "tinycc"
+    target.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(tinycc_license, target / "COPYING")
 
 if license is not None:
     license_target = root / "usr" / "share" / "licenses" / "musl"

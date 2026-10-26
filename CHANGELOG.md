@@ -2,6 +2,17 @@
 
 All notable changes to CKLOS are documented here.
 
+## 0.10.0 — 2026-10-27
+
+### Added
+
+- Native ring-3 `cck` C compiler using pinned TinyCC 0.9.28rc.
+- C89/C90, C99, C11, C17, C23 and GNU mode selection; explicit rejection of `c98`.
+- In-system C compilation to static ELF64 and default `a.rks`.
+- RKS2 container with BearSSL SHA-256 and kernel-side integrity verification.
+- CKLOS SDK `<stdbit.h>` and `<stdckdint.h>` headers.
+- musl headers, archives, TinyCC runtime files and license provenance in FS2.
+
 ## 0.9.0 — 2026-10-27
 
 ### Added

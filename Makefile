@@ -14,6 +14,8 @@ USER_PIPE_ELF := $(BUILD)/USERPIPE.ELF
 MUSL_STAGE := $(BUILD)/musl-stage/usr/local/musl
 MUSL_STAMP := $(BUILD)/musl/.cklos-ready
 MUSL_ELF := $(BUILD)/MUSLHELLO.ELF
+CCK_STAGE := $(BUILD)/cklos-toolchain
+CCK_STAMP := $(BUILD)/tinycc/.cklos-ready
 USER_ELVES := $(USER_HELLO_ELF) $(USER_FORK_ELF) $(USER_FAULT_ELF) \
 	$(USER_EXEC_ELF) $(USER_IO_ELF) $(USER_PIPE_ELF) $(MUSL_ELF)
 KERNEL_MAX_BYTES := 131072
@@ -67,7 +69,7 @@ CRYPTO_CFLAGS := --target=x86_64-none-elf -m64 -std=c11 -O2 \
 C_SOURCES := src/kernel.c src/console.c src/serial.c src/keyboard.c \
 	src/string.c src/memory.c src/vfs.c src/disk.c src/interrupts.c \
 	src/network.c src/gui.c src/mouse.c src/rks.c src/fs2.c src/tasks.c src/shell.c
-C_SOURCES := $(C_SOURCES) src/process.c
+C_SOURCES := $(C_SOURCES) src/process.c src/rks2.c
 C_OBJECTS := $(patsubst src/%.c,$(BUILD)/%.o,$(C_SOURCES))
 VENDOR_SOURCES := \
 	third_party/monocypher/src/monocypher.c \
@@ -91,12 +93,15 @@ VENDOR_OBJECTS := $(patsubst %.c,$(BUILD)/vendor/%.o,$(VENDOR_SOURCES))
 FS2_SOURCES := third_party/littlefs/lfs.c third_party/littlefs/lfs_util.c
 FS2_OBJECTS := $(patsubst %.c,$(BUILD)/vendor/%.o,$(FS2_SOURCES))
 OBJECTS := $(BUILD)/entry.o $(BUILD)/interrupt_stubs.o $(BUILD)/task_switch.o \
-	$(BUILD)/process_asm.o $(C_OBJECTS) $(FS2_OBJECTS)
+	$(BUILD)/process_asm.o $(C_OBJECTS) $(FS2_OBJECTS) \
+	$(BUILD)/vendor/third_party/bearssl/src/hash/sha2small.o \
+	$(BUILD)/vendor/third_party/bearssl/src/codec/enc32be.o \
+	$(BUILD)/vendor/third_party/bearssl/src/codec/dec32be.o
 DEPFILES := $(C_OBJECTS:.o=.d)
 
 -include $(DEPFILES)
 
-.PHONY: all image run term test check release clean doctor help crypto font fs2 musl keys
+.PHONY: all image run term test check release clean doctor help crypto font fs2 musl cck keys
 
 all: image
 
@@ -217,6 +222,10 @@ $(MUSL_ELF): $(BUILD)/musl_hello.o $(MUSL_STAMP) programs/user.ld
 		--gc-sections -o $@ $(MUSL_STAGE)/lib/crt1.o \
 		$(BUILD)/musl_hello.o $(MUSL_STAGE)/lib/libc.a
 
+$(CCK_STAMP): scripts/fetch-tinycc.sh scripts/build-cck.sh \
+	scripts/build-musl.sh programs/user.ld | $(BUILD)
+	./scripts/build-cck.sh
+
 $(BUILD)/%.o: src/%.c | $(BUILD)
 	$(CLANG) $(CFLAGS) -c $< -o $@
 
@@ -232,6 +241,9 @@ fs2:
 
 musl:
 	@./scripts/build-musl.sh
+
+cck:
+	@./scripts/build-cck.sh
 
 keys: | $(BUILD)
 	@./scripts/gen-ssh-keys.sh
@@ -253,9 +265,12 @@ $(BUILD)/kernel.bin: $(BUILD)/kernel.elf
 	$(OBJCOPY) -O binary $< $@
 
 $(BUILD)/fs2-root/.stamp: $(BUILD)/HELLO.RKS $(USER_ELVES) \
-	tools/make-fs2-root.py $(MUSL_STAMP) | $(BUILD)
+	tools/make-fs2-root.py $(MUSL_STAMP) $(CCK_STAMP) | $(BUILD)
 	python3 tools/make-fs2-root.py $(BUILD)/fs2-root $(BUILD)/HELLO.RKS \
-		$(USER_ELVES) --musl $(MUSL_STAGE) --license third_party/musl/COPYRIGHT
+		$(USER_ELVES) --musl $(MUSL_STAGE) \
+		--toolchain $(CCK_STAGE) --sample programs/cck_hello.c \
+		--sdk include --license third_party/musl/COPYRIGHT \
+		--tinycc-license third_party/tinycc/COPYING
 	touch $@
 
 $(BUILD)/mkfs2: tools/mkfs2.c third_party/littlefs/lfs.c third_party/littlefs/lfs_util.c | fs2 $(BUILD)

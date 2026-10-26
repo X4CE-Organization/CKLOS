@@ -9,6 +9,7 @@ int strncmp(const char *left, const char *right, size_t count);
 int memcmp(const void *left, const void *right, size_t count);
 char *strcpy(char *destination, const char *source);
 char *strchr(const char *text, int character);
+char *strstr(const char *text, const char *needle);
 size_t strspn(const char *text, const char *accepted);
 size_t strcspn(const char *text, const char *rejected);
 void *memset(void *destination, int value, size_t count);

@@ -2,6 +2,7 @@
 #include "fs2.h"
 #include "memory.h"
 #include "process.h"
+#include "rks2.h"
 #include "string.h"
 #include "syscall.h"
 
@@ -10,11 +11,12 @@ extern void process_enter_user(uint64_t entry, uint64_t stack);
 extern void process_user_return(void);
 
 #define PROCESS_LIMIT 8
-#define PROCESS_PAGES 192
+#define PROCESS_PAGES 512
 #define USER_BASE 0x0000004000000000ULL
 #define USER_REGION_LIMIT 0x0000007800000000ULL
 #define MMAP_BASE 0x0000005000000000ULL
 #define STACK_TOP 0x0000007FFFFFF000ULL
+#define USER_STACK_SIZE 0x0000000000040000ULL
 #define PAGE_SIZE 4096ULL
 #define ELF_MAX_SIZE (512U * 1024U)
 #define PAGE_USER 0x007ULL
@@ -162,6 +164,9 @@ static void save_fx(process *slot) {
 static void restore_fx(process *slot) {
     __asm__ volatile("fxrstor (%0)" : : "r"(slot->fx_state) : "memory");
 }
+
+static bool user_write_cr3(uint64_t cr3, void *user_pointer,
+                           const void *source, uint32_t size);
 
 static void release_file_reference(process_file *file) {
     if (file->kind == FILE_KIND_FS && file->data) {
@@ -337,6 +342,52 @@ static int32_t slot_index(process *slot) {
     return (int32_t)(slot - processes);
 }
 
+static bool install_arguments(process *slot, int argc, const char *const *argv) {
+    if (argc < 0 || argc > 32) return false;
+    uint64_t top = STACK_TOP;
+    uint64_t pointers[32];
+    for (int index = argc - 1; index >= 0; index--) {
+        uint32_t length = (uint32_t)strlen(argv[index]);
+        top -= length + 1;
+        if (top < STACK_TOP - USER_STACK_SIZE) return false;
+        if (!user_write_cr3(slot->cr3, (void *)(uintptr_t)top,
+                            argv[index], length + 1)) {
+            return false;
+        }
+        pointers[index] = top;
+    }
+    uint64_t frame_size = (uint64_t)(argc + 4) * sizeof(uint64_t);
+    uint64_t stack = (top - frame_size) & ~0x0FULL;
+    if (stack < STACK_TOP - USER_STACK_SIZE) return false;
+    uint64_t zero = 0;
+    uint64_t count = (uint64_t)(uint32_t)argc;
+    if (!user_write_cr3(slot->cr3, (void *)(uintptr_t)stack,
+                        &count, sizeof(count))) {
+        return false;
+    }
+    for (int index = 0; index < argc; index++) {
+        if (!user_write_cr3(slot->cr3,
+                            (void *)(uintptr_t)(stack + 8 * (index + 1)),
+                            &pointers[index], sizeof(pointers[index]))) {
+            return false;
+        }
+    }
+    if (!user_write_cr3(slot->cr3,
+                        (void *)(uintptr_t)(stack + 8 * (argc + 1)),
+                        &zero, sizeof(zero))
+        || !user_write_cr3(slot->cr3,
+                           (void *)(uintptr_t)(stack + 8 * (argc + 2)),
+                           &zero, sizeof(zero))
+        || !user_write_cr3(slot->cr3,
+                           (void *)(uintptr_t)(stack + 8 * (argc + 3)),
+                           &zero, sizeof(zero))) {
+        return false;
+    }
+    slot->frame.rsp = stack;
+    slot->stack_pointer = stack;
+    return true;
+}
+
 static bool load_elf(process *slot, const uint8_t *data, uint32_t size) {
     if (size < sizeof(elf64_header)) return false;
     const elf64_header *header = (const elf64_header *)data;
@@ -388,8 +439,14 @@ static bool load_elf(process *slot, const uint8_t *data, uint32_t size) {
         if (last > highest) highest = last;
     }
 
-    uint64_t stack_page = STACK_TOP - PAGE_SIZE;
-    uint64_t stack_physical = map_page(slot, stack_page, PAGE_USER);
+    uint64_t stack_page = STACK_TOP - USER_STACK_SIZE;
+    uint64_t stack_physical = 0;
+    for (uint64_t address = stack_page; address < STACK_TOP;
+         address += PAGE_SIZE) {
+        stack_physical = map_page(slot, address, PAGE_USER);
+        if (!stack_physical) return false;
+    }
+    stack_physical = map_page(slot, STACK_TOP - PAGE_SIZE, PAGE_USER);
     if (!stack_physical) return false;
     uint64_t *initial_stack =
         (uint64_t *)(uintptr_t)(stack_physical + PAGE_SIZE - 32);
@@ -407,12 +464,24 @@ static bool load_elf(process *slot, const uint8_t *data, uint32_t size) {
 }
 
 static process *create_from_elf(const char *path, int32_t parent_pid) {
-    uint32_t size;
-    if (fs2_stat(path, &size, 0) != 0 || !size || size > ELF_MAX_SIZE) return 0;
-    uint8_t *image = (uint8_t *)kmalloc(size);
+    uint32_t file_size;
+    if (fs2_stat(path, &file_size, 0) != 0 || !file_size
+        || file_size > RKS2_HEADER_SIZE + RKS2_MAX_PAYLOAD) return 0;
+    uint8_t *image = (uint8_t *)kmalloc(file_size);
     if (!image) return 0;
     uint32_t actual;
-    if (fs2_read(path, image, size, &actual) != 0 || actual != size) {
+    if (fs2_read(path, image, file_size, &actual) != 0 || actual != file_size) {
+        kfree(image);
+        return 0;
+    }
+    uint32_t size = file_size;
+    if (rks2_is_container(image, file_size)) {
+        uint8_t *payload;
+        kfree(image);
+        if (!rks2_extract(path, &payload, &size)) return 0;
+        image = payload;
+    }
+    if (!size || size > ELF_MAX_SIZE) {
         kfree(image);
         return 0;
     }
@@ -610,7 +679,8 @@ static int32_t open_file(process *slot, const char *path, uint32_t flags) {
         return -CKLOS_EINVAL;
     }
     if (truncate) size = 0;
-    if (size > 512U * 1024U) return -CKLOS_ENOMEM;
+    if (writable && size > 512U * 1024U) return -CKLOS_ENOMEM;
+    if (!writable && size > 8U * 1024U * 1024U) return -CKLOS_ENOMEM;
     uint32_t slot_index_file = 8;
     for (uint32_t index = 0; index < 8; index++) {
         if (!slot->files[index].used) {
@@ -621,15 +691,20 @@ static int32_t open_file(process *slot, const char *path, uint32_t flags) {
     if (slot_index_file == 8) return -CKLOS_EMFILE;
     process_file *file = &slot->files[slot_index_file];
     memset(file, 0, sizeof(*file));
-    file->data = (uint8_t *)kmalloc(size ? size : 1);
-    if (!file->data) return -CKLOS_ENOMEM;
-    uint32_t actual = 0;
-    if (status == 0 && size && fs2_read(path, file->data, size, &actual) != 0) {
-        kfree(file->data);
-        memset(file, 0, sizeof(*file));
-        return -CKLOS_EINVAL;
+    if (writable) {
+        file->data = (uint8_t *)kmalloc(size ? size : 1);
+        if (!file->data) return -CKLOS_ENOMEM;
+        uint32_t actual = 0;
+        if (status == 0 && size
+            && fs2_read(path, file->data, size, &actual) != 0) {
+            kfree(file->data);
+            memset(file, 0, sizeof(*file));
+            return -CKLOS_EINVAL;
+        }
+        file->size = actual;
+    } else {
+        file->size = size;
     }
-    file->size = actual;
     file->writable = writable;
     file->used = true;
     file->kind = FILE_KIND_FS;
@@ -657,9 +732,10 @@ static int32_t clone_files(process *parent, process *child) {
         process_file *source = &parent->files[index];
         if (!source->used) continue;
         process_file *destination = &child->files[index];
-        destination->data = (uint8_t *)kmalloc(source->size ? source->size : 1);
-        if (!destination->data) return -CKLOS_ENOMEM;
-        if (source->size) {
+        if (source->data) {
+            destination->data =
+                (uint8_t *)kmalloc(source->size ? source->size : 1);
+            if (!destination->data) return -CKLOS_ENOMEM;
             memcpy(destination->data, source->data, source->size);
         }
         destination->used = true;
@@ -687,12 +763,17 @@ static int32_t duplicate_file(process *slot, uint64_t old_fd, uint64_t new_fd) {
     if (destination->used) release_file_reference(destination);
     *destination = *source;
     if (source->kind == FILE_KIND_FS) {
-        destination->data = (uint8_t *)kmalloc(source->size ? source->size : 1);
-        if (!destination->data) {
-            memset(destination, 0, sizeof(*destination));
-            return -CKLOS_ENOMEM;
+        if (source->data) {
+            destination->data =
+                (uint8_t *)kmalloc(source->size ? source->size : 1);
+            if (!destination->data) {
+                memset(destination, 0, sizeof(*destination));
+                return -CKLOS_ENOMEM;
+            }
+            if (source->size) {
+                memcpy(destination->data, source->data, source->size);
+            }
         }
-        if (source->size) memcpy(destination->data, source->data, source->size);
     } else if (source->kind == FILE_KIND_PIPE_READ) {
         pipes[source->pipe_index].readers++;
     } else if (source->kind == FILE_KIND_PIPE_WRITE) {
@@ -836,12 +917,44 @@ static int64_t sys_read(process *slot, uint64_t fd, char *buffer, uint64_t count
     uint64_t available = file->size - file->offset;
     if (count > available) count = available;
     if (count > 65536) count = 65536;
-    if (!user_write_cr3(slot->cr3, buffer, file->data + file->offset,
-                        (uint32_t)count)) {
-        return -CKLOS_EFAULT;
+    if (file->data) {
+        if (!user_write_cr3(slot->cr3, buffer, file->data + file->offset,
+                            (uint32_t)count)) {
+            return -CKLOS_EFAULT;
+        }
+    } else {
+        uint8_t chunk[512];
+        uint32_t copied = 0;
+        while (copied < count) {
+            uint32_t part = count - copied > sizeof(chunk)
+                          ? sizeof(chunk) : (uint32_t)(count - copied);
+            uint32_t actual = 0;
+            if (fs2_read_at(file->path, file->offset + copied, chunk, part,
+                            &actual) != 0 || actual != part) {
+                return copied ? (int64_t)copied : -CKLOS_EINVAL;
+            }
+            if (!user_write_cr3(slot->cr3, buffer + copied, chunk, part)) {
+                return copied ? (int64_t)copied : -CKLOS_EFAULT;
+            }
+            copied += part;
+        }
     }
     file->offset += (uint32_t)count;
     return (int64_t)count;
+}
+
+static int64_t sys_lseek(process *slot, uint64_t fd, int64_t offset, uint64_t whence) {
+    process_file *file = file_for(slot, fd);
+    if (!file || file->kind != FILE_KIND_FS) return -CKLOS_EBADF;
+    int64_t position;
+    if (whence == 0) position = offset;
+    else if (whence == 1) position = (int64_t)file->offset + offset;
+    else if (whence == 2) position = (int64_t)file->size + offset;
+    else return -CKLOS_EINVAL;
+    int64_t limit = file->data ? 512 * 1024 : 8 * 1024 * 1024;
+    if (position < 0 || position > limit) return -CKLOS_EINVAL;
+    file->offset = (uint32_t)position;
+    return position;
 }
 
 typedef struct {
@@ -870,14 +983,26 @@ static int64_t sys_writev(process *slot, uint64_t fd, uint64_t vector,
 
 static int64_t replace_with_elf(process *slot, interrupt_frame *frame,
                                 const char *path) {
-    uint32_t size;
-    if (fs2_stat(path, &size, 0) != 0 || !size || size > ELF_MAX_SIZE) {
+    uint32_t file_size;
+    if (fs2_stat(path, &file_size, 0) != 0 || !file_size
+        || file_size > RKS2_HEADER_SIZE + RKS2_MAX_PAYLOAD) {
         return -CKLOS_EINVAL;
     }
-    uint8_t *image = (uint8_t *)kmalloc(size);
+    uint8_t *image = (uint8_t *)kmalloc(file_size);
     if (!image) return -CKLOS_ENOMEM;
     uint32_t actual;
-    if (fs2_read(path, image, size, &actual) != 0 || actual != size) {
+    if (fs2_read(path, image, file_size, &actual) != 0 || actual != file_size) {
+        kfree(image);
+        return -CKLOS_EINVAL;
+    }
+    uint32_t size = file_size;
+    if (rks2_is_container(image, file_size)) {
+        uint8_t *payload;
+        kfree(image);
+        if (!rks2_extract(path, &payload, &size)) return -CKLOS_EINVAL;
+        image = payload;
+    }
+    if (!size || size > ELF_MAX_SIZE) {
         kfree(image);
         return -CKLOS_EINVAL;
     }
@@ -994,8 +1119,12 @@ interrupt_frame *process_syscall(interrupt_frame *frame) {
             break;
         }
         case SYS_MMAP: {
-            uint64_t length = (frame->rdx + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
-            uint64_t base = slot->mmap_next;
+            uint64_t length = (frame->rsi + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+            bool fixed = (frame->r10 & 0x10) != 0;
+            uint64_t suggested = frame->rdi
+                          ? frame->rdi & ~(PAGE_SIZE - 1)
+                          : slot->mmap_next;
+            uint64_t base = fixed ? suggested : slot->mmap_next;
             if (!length || base + length >= USER_REGION_LIMIT
                 || base + length < base) {
                 frame->rax = (uint64_t)-CKLOS_ENOMEM;
@@ -1007,13 +1136,20 @@ interrupt_frame *process_syscall(interrupt_frame *frame) {
                     goto mmap_done;
                 }
             }
-            slot->mmap_next = base + length;
+            if (!fixed) slot->mmap_next = base + length;
             frame->rax = base;
 mmap_done:
             break;
         }
         case SYS_MUNMAP:
             frame->rax = 0;
+            break;
+        case SYS_MPROTECT:
+        case SYS_MADVISE:
+            frame->rax = 0;
+            break;
+        case SYS_MREMAP:
+            frame->rax = (uint64_t)-CKLOS_ENOSYS;
             break;
         case SYS_ARCH_PRCTL:
             if (frame->rdi == 0x1002) {
@@ -1070,6 +1206,10 @@ mmap_done:
         case SYS_READ:
             frame->rax = (uint64_t)sys_read(
                 slot, frame->rdi, (char *)(uintptr_t)frame->rsi, frame->rdx);
+            break;
+        case SYS_LSEEK:
+            frame->rax = (uint64_t)sys_lseek(
+                slot, frame->rdi, (int64_t)frame->rsi, frame->rdx);
             break;
         case SYS_OPEN: {
             char path[256];
@@ -1178,8 +1318,19 @@ mmap_done:
 interrupt_frame *process_user_exception(interrupt_frame *frame) {
     if (current_process < 0) return frame;
     process *slot = &processes[current_process];
-    console_printf("\nProcess %d terminated by exception %u at 0x%08x.\n",
-                   slot->pid, (uint32_t)frame->vector, (uint32_t)frame->rip);
+    uint64_t fault_address = 0;
+    if (frame->vector == 14) {
+        __asm__ volatile("mov %%cr2, %0" : "=r"(fault_address));
+    }
+    console_printf("\nProcess %d terminated by exception %u at 0x%08x:%08x",
+                   slot->pid, (uint32_t)frame->vector,
+                   (uint32_t)(frame->rip >> 32), (uint32_t)frame->rip);
+    if (fault_address) {
+        console_printf(" fault 0x%08x:%08x",
+                       (uint32_t)(fault_address >> 32),
+                       (uint32_t)fault_address);
+    }
+    console_putc('\n');
     slot->state = PROCESS_ZOMBIE;
     slot->exit_code = 128 + (int32_t)frame->vector;
     return schedule(frame);
@@ -1192,12 +1343,18 @@ interrupt_frame *process_timer(interrupt_frame *frame) {
     return schedule(frame);
 }
 
-int process_run_elf(const char *path) {
+int process_run_elf_args(const char *path, int argc, const char *const *argv) {
     if (current_process >= 0) return -1;
     process *slot = create_from_elf(path, 0);
     if (!slot) {
         console_printf("PROCESS: cannot load ELF64 file %s.\n", path);
         return -2;
+    }
+    if (!install_arguments(slot, argc, argv)) {
+        clear_address_space(slot);
+        memset(slot, 0, sizeof(*slot));
+        console_write("PROCESS: cannot construct user argument stack.\n");
+        return -3;
     }
     current_process = slot_index(slot);
     slot->state = PROCESS_RUNNING;
@@ -1219,6 +1376,11 @@ int process_run_elf(const char *path) {
         }
     }
     return last_exit;
+}
+
+int process_run_elf(const char *path) {
+    const char *argv[1] = { path };
+    return process_run_elf_args(path, 1, argv);
 }
 
 uint32_t process_count(void) {

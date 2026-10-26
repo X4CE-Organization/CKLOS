@@ -322,6 +322,27 @@ int fs2_read(const char *path, void *buffer, uint32_t capacity, uint32_t *size) 
     return 0;
 }
 
+int fs2_read_at(const char *path, uint32_t offset, void *buffer,
+                uint32_t capacity, uint32_t *size) {
+    char resolved[FS2_PATH_MAX];
+    path_normalize(path, resolved);
+    struct lfs_file_config file_config = {.buffer = file_cache};
+    struct lfs_file file;
+    if (lfs_file_opencfg(&filesystem, &file, resolved, LFS_O_RDONLY,
+                        &file_config) != LFS_ERR_OK) {
+        return -1;
+    }
+    if (lfs_file_seek(&filesystem, &file, offset, LFS_SEEK_SET) < 0) {
+        lfs_file_close(&filesystem, &file);
+        return -1;
+    }
+    lfs_ssize_t count = lfs_file_read(&filesystem, &file, buffer, capacity);
+    lfs_file_close(&filesystem, &file);
+    if (count < 0) return -2;
+    if (size) *size = (uint32_t)count;
+    return 0;
+}
+
 int fs2_write(const char *path, const void *data, uint32_t size, bool append) {
     char resolved[FS2_PATH_MAX];
     path_normalize(path, resolved);

@@ -30,10 +30,12 @@ BIOS -> CKLOS 两阶段引导器 -> x86-64 长模式 -> C 内核 -> CKLOS GUI
 - ELF64 静态程序加载、ring 3、每进程 CR3、用户栈和内核/用户内存隔离
 - `int 0x80` 系统调用、`fork`/`execve`/`wait4`、管道、文件描述符继承和定时抢占
 - 固定版本 musl 静态 libc、标准/POSIX 头文件和 `/usr/lib/libc.a`
+- 系统原生 `cck` C 编译器、TinyCC 后端和 C89 到 C23/GNU 模式选择
+- 带 SHA-256 校验的 RKS2 静态可执行容器和默认 `a.rks` 输出
 - CMOS 实时时钟、CPU 信息、内存布局和设备诊断
 - 整数计算、十六进制查看、颜色主题和 PC 扬声器测试
 
-这是 CKLOS 0.9.0 的开源 x86-64 图形内核版本。它已经有长模式、分页、任务切换、两级持久化存储、ELF64 用户态隔离、静态 musl libc、RTL8139 网络、图形终端、可操作鼠标和可执行文件，但还不是 Linux 那样的完整通用操作系统：完整驱动模型、SSH、USB 和完整桌面尚未实现。
+这是 CKLOS 0.10.0 的开源 x86-64 图形内核版本。它已经有长模式、分页、任务切换、两级持久化存储、ELF64 用户态隔离、静态 musl libc、系统内 C 编译器、RTL8139 网络、图形终端、可操作鼠标和可执行文件，但还不是 Linux 那样的完整通用操作系统：完整驱动模型、SSH、USB 和完整桌面尚未实现。
 
 ## 安装依赖
 
@@ -125,6 +127,7 @@ make test
 | `exec HELLO.RKS` | 校验并执行 RKS1 可执行文件 |
 | `elfexec FILE.ELF` | 在 ring 3 装载并执行静态 ELF64 程序 |
 | `procs` | 显示活动进程数和当前 PID |
+| `cck FILE.c` | 使用 TinyCC 后端编译静态 ELF64，并默认生成 `a.rks` |
 | `rks` | 显示 RKS 运行时和已安装程序数量 |
 | `calc 42 '*' 7` | 支持加减乘除、取余、位运算和移位 |
 | `color green` | 切换终端主题 |
@@ -146,6 +149,8 @@ RKS executable is running!
 ```
 
 示例源码位于 `programs/hello.c`，ABI 在 `programs/rks_api.h`。`RKS1` 是兼容的旧式 ring-0 程序格式，只用于现有演示。新的隔离程序使用 `ELFEXEC`，运行在 ring 3；示例包括 `USERHELLO.ELF`、`USERFORK.ELF`、`USERFAULT.ELF`、`USEREXEC.ELF`、`USERIO.ELF`、`USERPIPE.ELF` 和链接 musl 的 `MUSLHELLO.ELF`。
+
+`cck` 使用固定提交的 TinyCC 作为 C 后端。它接受 C89/C90、C99、C11、C17、C23 和对应 GNU 模式，并明确拒绝不存在的 `-std=c98`。`-o app.elf` 生成静态 ELF64；`-o app.rks` 或无 `-o` 生成经 BearSSL SHA-256 校验的 RKS2。C++ 不由 `cck` 处理，具体限制见 [docs/CCK.md](docs/CCK.md)。
 
 ## SSH 开发状态
 
@@ -180,6 +185,7 @@ src/fs2.c               CKLOSFS2、目录路径、迁移和一致性检查
 src/process.c           ELF64、ring 3、进程、系统和文件描述符
 src/process.asm         GDT/TSS、用户态入口和返回内核上下文
 src/syscall.h           CKLOS/Linux x86-64 兼容系统调用编号
+src/rks2.c              RKS2 容器、SHA-256 和 ELF64 载荷校验
 src/kernel.c            内核初始化
 src/gui.c               VGA 帧缓冲、窗口、按钮、面板和软件光标
 src/mouse.c             PS/2 鼠标 IRQ12 驱动
@@ -195,4 +201,4 @@ linker.ld               内核链接布局
 
 ## 后续路线
 
-下一阶段是原生 TinyCC 后端 `cck`、RKS2 容器和 C 标准一致性测试。SSH 端口仍保持关闭。
+下一阶段是 VBE 高分辨率图形、Unicode 字体、UTF-8 编辑器 `cki`。SSH 端口仍保持关闭。

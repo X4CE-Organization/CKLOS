@@ -6,6 +6,7 @@
 
 void process_init(void);
 int process_run_elf(const char *path);
+int process_run_elf_args(const char *path, int argc, const char *const *argv);
 interrupt_frame *process_syscall(interrupt_frame *frame);
 interrupt_frame *process_user_exception(interrupt_frame *frame);
 interrupt_frame *process_timer(interrupt_frame *frame);
