@@ -1,133 +1,259 @@
 #include "gui.h"
+#include "memory.h"
 #include "mouse.h"
 #include "serial.h"
 #include "string.h"
+#include "unicode.h"
 
 #include "font8x8_basic.h"
 
-#define GUI_WIDTH 320
-#define GUI_HEIGHT 200
-#define WINDOW_X 4
-#define WINDOW_Y 18
-#define WINDOW_WIDTH 312
-#define WINDOW_HEIGHT 176
-#define TEXT_X 10
-#define TEXT_Y 42
-#define TEXT_COLUMNS 37
-#define TEXT_ROWS 17
-#define STATUS_Y 190
+#define CURSOR_SIZE 16
 
 static uint8_t *framebuffer = (uint8_t *)0xA0000;
+static uint32_t screen_width = 320;
+static uint32_t screen_height = 200;
+static uint32_t screen_pitch = 320;
+static uint32_t screen_bpp = 8;
+static bool linear_framebuffer;
 static uint8_t foreground = 7;
 static uint8_t background = 0;
 static uint32_t row;
 static uint32_t column;
 static int32_t cursor_x = 160;
 static int32_t cursor_y = 100;
-static uint8_t cursor_background[16 * 16];
+static uint8_t cursor_background[CURSOR_SIZE * CURSOR_SIZE * 4];
 static bool cursor_saved;
 static uint8_t active_panel;
+static uint32_t text_x;
+static uint32_t text_y;
+static uint32_t text_columns;
+static uint32_t text_rows;
+static uint32_t status_y;
+static uint32_t window_x;
+static uint32_t window_y;
+static uint32_t window_width;
+static uint32_t window_height;
+static bool editor_mode;
+static uint8_t utf8_pending[4];
+static uint32_t utf8_pending_length;
+static uint32_t utf8_pending_expected;
+
+static const uint32_t palette[16] = {
+    0x000000, 0x0000AA, 0x00AA00, 0x00AAAA,
+    0xAA0000, 0xAA00AA, 0xAA5500, 0xAAAAAA,
+    0x555555, 0x5555FF, 0x55FF55, 0x55FFFF,
+    0xFF5555, 0xFF55FF, 0xFFFF55, 0xFFFFFF
+};
+
+void gui_configure(const boot_info *info) {
+    if (info && info->video_mode && info->framebuffer
+        && info->width && info->height && info->pitch
+        && (info->bpp == 32 || info->bpp == 16)) {
+        framebuffer = (uint8_t *)(uintptr_t)info->framebuffer;
+        screen_width = info->width;
+        screen_height = info->height;
+        screen_pitch = info->pitch;
+        screen_bpp = info->bpp;
+        linear_framebuffer = true;
+    } else {
+        framebuffer = (uint8_t *)0xA0000;
+        screen_width = 320;
+        screen_height = 200;
+        screen_pitch = 320;
+        screen_bpp = 8;
+        linear_framebuffer = false;
+    }
+    window_x = screen_width / 48;
+    if (window_x < 8) window_x = 8;
+    window_y = 48;
+    window_width = screen_width - window_x * 2;
+    window_height = screen_height - window_y - 40;
+    text_x = window_x + 16;
+    text_y = window_y + 48;
+    text_columns = (window_width - 32) / 8;
+    text_rows = (window_height - 72) / 16;
+    status_y = screen_height - 24;
+}
+
+uint32_t gui_width(void) { return screen_width; }
+uint32_t gui_height(void) { return screen_height; }
+uint32_t gui_bpp(void) { return screen_bpp; }
+bool gui_linear(void) { return linear_framebuffer; }
+void gui_set_editor_mode(bool enabled) { editor_mode = enabled; }
 
 static void pixel(uint32_t x, uint32_t y, uint8_t color) {
-    if (x < GUI_WIDTH && y < GUI_HEIGHT) {
-        framebuffer[y * GUI_WIDTH + x] = color;
+    if (x >= screen_width || y >= screen_height) return;
+    uint8_t *address = framebuffer + y * screen_pitch;
+    if (screen_bpp == 32) {
+        ((uint32_t *)address)[x] = palette[color & 15];
+    } else if (screen_bpp == 16) {
+        uint32_t rgb = palette[color & 15];
+        uint16_t value = (uint16_t)(((rgb >> 19) & 0x1F) << 11
+                                  | ((rgb >> 10) & 0x3F) << 5
+                                  | ((rgb >> 3) & 0x1F));
+        ((uint16_t *)address)[x] = value;
+    } else {
+        address[x] = color;
     }
 }
 
-static void fill(uint32_t x, uint32_t y, uint32_t width, uint32_t height, uint8_t color) {
-    for (uint32_t py = y; py < y + height && py < GUI_HEIGHT; py++) {
-        memset(framebuffer + py * GUI_WIDTH + x, color, width);
+void gui_fill_rect(uint32_t x, uint32_t y, uint32_t width,
+                   uint32_t height, uint8_t color) {
+    for (uint32_t py = y; py < y + height && py < screen_height; py++) {
+        for (uint32_t px = x; px < x + width && px < screen_width; px++) {
+            pixel(px, py, color);
+        }
     }
+}
+
+static void draw_codepoint(uint32_t x, uint32_t y, uint32_t codepoint,
+                           uint8_t color, uint8_t background_color) {
+    if (codepoint < 128) {
+        if (background_color != 0xFF) gui_fill_rect(x, y, 8, 16, background_color);
+        for (uint32_t glyph_y = 0; glyph_y < 8; glyph_y++) {
+            uint8_t bits = (uint8_t)font8x8_basic[codepoint][glyph_y];
+            for (uint32_t glyph_x = 0; glyph_x < 8; glyph_x++) {
+                if (bits & (1U << glyph_x)) pixel(x + glyph_x, y + glyph_y, color);
+            }
+        }
+        return;
+    }
+    const uint8_t *glyph = unicode_glyph(codepoint);
+    if (!glyph) {
+        draw_codepoint(x, y, '?', color, background_color);
+        return;
+    }
+    if (background_color != 0xFF) gui_fill_rect(x, y, 16, 16, background_color);
+    for (uint32_t glyph_y = 0; glyph_y < 16; glyph_y++) {
+        uint16_t bits = (uint16_t)((uint16_t)glyph[glyph_y * 2] << 8)
+                      | glyph[glyph_y * 2 + 1];
+        for (uint32_t glyph_x = 0; glyph_x < 16; glyph_x++) {
+            if (bits & (1U << (15 - glyph_x))) {
+                pixel(x + glyph_x, y + glyph_y, color);
+            }
+        }
+    }
+}
+
+void gui_draw_text_n(uint32_t x, uint32_t y, const char *text, uint32_t size,
+                     uint8_t color, uint8_t background_color) {
+    uint32_t offset = 0;
+    while (offset < size) {
+        uint32_t consumed;
+        uint32_t codepoint = utf8_decode(text + offset, &consumed);
+        if (consumed > size - offset) consumed = 1;
+        draw_codepoint(x, y, codepoint, color, background_color);
+        x += codepoint < 128 ? 8 : 16;
+        offset += consumed;
+    }
+}
+
+void gui_draw_text(uint32_t x, uint32_t y, const char *text,
+                   uint8_t color, uint8_t background_color) {
+    gui_draw_text_n(x, y, text, (uint32_t)strlen(text), color, background_color);
 }
 
 static void text_at(uint32_t x, uint32_t y, const char *text, uint8_t color) {
-    while (*text) {
-        uint8_t character = (uint8_t)*text++;
-        if (character >= 128) {
-            character = '?';
-        }
-        for (uint32_t glyph_y = 0; glyph_y < 8; glyph_y++) {
-            uint8_t bits = (uint8_t)font8x8_basic[character][glyph_y];
-            for (uint32_t glyph_x = 0; glyph_x < 8; glyph_x++) {
-                if (bits & (1U << glyph_x)) {
-                    pixel(x + glyph_x, y + glyph_y, color);
-                }
-            }
-        }
-        x += 8;
-    }
+    gui_draw_text(x, y, text, color, 0xFF);
 }
 
 static void chrome(void) {
-    fill(0, 0, GUI_WIDTH, GUI_HEIGHT, 8);
-    fill(0, 0, GUI_WIDTH, 16, 1);
-    text_at(6, 4, "CKLOS", 15);
-    fill(58, 3, 34, 11, 11);
-    text_at(64, 5, "SYS", 0);
-    fill(96, 3, 34, 11, 10);
-    text_at(102, 5, "NET", 0);
-    fill(134, 3, 34, 11, 12);
-    text_at(140, 5, "CLR", 0);
-    text_at(248, 4, "AMD64", 14);
+    gui_fill_rect(0, 0, screen_width, screen_height, 8);
+    gui_fill_rect(0, 0, screen_width, 32, 1);
+    text_at(12, 10, "CKLOS", 15);
+    gui_fill_rect(96, 8, 64, 18, 11);
+    text_at(108, 13, "SYS", 0);
+    gui_fill_rect(168, 8, 64, 18, 10);
+    text_at(180, 13, "NET", 0);
+    gui_fill_rect(240, 8, 64, 18, 12);
+    text_at(252, 13, "CLR", 0);
+    text_at(screen_width - 96, 11, "AMD64", 14);
 
-    fill(WINDOW_X + 4, WINDOW_Y + 6, WINDOW_WIDTH, WINDOW_HEIGHT, 0);
-    fill(WINDOW_X, WINDOW_Y, WINDOW_WIDTH, WINDOW_HEIGHT, 7);
-    fill(WINDOW_X + 2, WINDOW_Y + 2, WINDOW_WIDTH - 4, WINDOW_HEIGHT - 4, 0);
-    fill(WINDOW_X + 4, WINDOW_Y + 4, WINDOW_WIDTH - 8, 14, 3);
-    text_at(WINDOW_X + 8, WINDOW_Y + 7, "CKLOS Terminal - 64-bit", 0);
-    text_at(WINDOW_X + 278, WINDOW_Y + 7, "_ [] X", 8);
+    gui_fill_rect(window_x + 6, window_y + 6, window_width, window_height, 0);
+    gui_fill_rect(window_x, window_y, window_width, window_height, 7);
+    gui_fill_rect(window_x + 2, window_y + 2, window_width - 4,
+                  window_height - 4, 0);
+    gui_fill_rect(window_x + 4, window_y + 4, window_width - 8, 28, 3);
+    text_at(window_x + 14, window_y + 12, "CKLOS Terminal - 64-bit", 0);
+    text_at(window_x + window_width - 80, window_y + 12, "_ [] X", 8);
 
-    fill(0, STATUS_Y, GUI_WIDTH, GUI_HEIGHT - STATUS_Y, 7);
-    text_at(5, STATUS_Y + 3, "MOUSE READY   PORT 22   CTRL+L", 0);
+    gui_fill_rect(0, status_y, screen_width, screen_height - status_y, 7);
+    text_at(10, status_y + 8,
+            linear_framebuffer ? "VBE LINEAR   MOUSE READY   CTRL+L"
+                               : "VGA 13H   MOUSE READY   CTRL+L", 0);
 }
 
 static void cursor_hide(void) {
-    if (!cursor_saved) {
-        return;
-    }
-    for (uint32_t y = 0; y < 16; y++) {
-        for (uint32_t x = 0; x < 16; x++) {
-            pixel((uint32_t)cursor_x + x, (uint32_t)cursor_y + y,
-                  cursor_background[y * 16 + x]);
+    if (!cursor_saved) return;
+    for (uint32_t y = 0; y < CURSOR_SIZE; y++) {
+        for (uint32_t x = 0; x < CURSOR_SIZE; x++) {
+            uint32_t source = (y * CURSOR_SIZE + x)
+                            * (screen_bpp >= 16 ? 4 : 1);
+            uint32_t target_x = (uint32_t)cursor_x + x;
+            uint32_t target_y = (uint32_t)cursor_y + y;
+            if (target_x >= screen_width || target_y >= screen_height) continue;
+            uint8_t *target = framebuffer + target_y * screen_pitch;
+            if (screen_bpp == 32) {
+                ((uint32_t *)target)[target_x] =
+                    *(uint32_t *)(cursor_background + source);
+            } else if (screen_bpp == 16) {
+                ((uint16_t *)target)[target_x] =
+                    *(uint16_t *)(cursor_background + source);
+            } else {
+                target[target_x] = cursor_background[source];
+            }
         }
     }
     cursor_saved = false;
 }
 
 static void cursor_show(void) {
-    static const char *shape[16] = {
-        "#           ",
-        "##          ",
-        "#W#         ",
-        "#WW#        ",
-        "#WWW#       ",
-        "#WWWW#      ",
-        "#WWWWW#     ",
-        "#WWWWWW#    ",
-        "#WWWWWWW#   ",
-        "#WWWWWWWW#  ",
-        "#WWWW####   ",
-        "#WW#WW#     ",
-        "#W# #WW#    ",
-        "##  #WW#    ",
-        "#    #W#    ",
-        "      ##    "
+    static const char *shape[CURSOR_SIZE] = {
+        "#               ",
+        "##              ",
+        "#W#             ",
+        "#WW#            ",
+        "#WWW#           ",
+        "#WWWW#          ",
+        "#WWWWW#         ",
+        "#WWWWWW#        ",
+        "#WWWWWWW#       ",
+        "#WWWWWWWW#      ",
+        "#WWWW#####      ",
+        "#WW#WW#         ",
+        "#W# #WW#        ",
+        "##  #WW#        ",
+        "#    #W#        ",
+        "      ##        "
     };
-    if (cursor_x > 303) {
-        cursor_x = 303;
+    if (cursor_x < 0) cursor_x = 0;
+    if (cursor_y < 0) cursor_y = 0;
+    if (cursor_x > (int32_t)screen_width - CURSOR_SIZE) {
+        cursor_x = (int32_t)screen_width - CURSOR_SIZE;
     }
-    if (cursor_y > 183) {
-        cursor_y = 183;
+    if (cursor_y > (int32_t)screen_height - CURSOR_SIZE) {
+        cursor_y = (int32_t)screen_height - CURSOR_SIZE;
     }
-    for (uint32_t y = 0; y < 16; y++) {
-        for (uint32_t x = 0; x < 16; x++) {
-            cursor_background[y * 16 + x] =
-                framebuffer[((uint32_t)cursor_y + y) * GUI_WIDTH +
-                            (uint32_t)cursor_x + x];
+    for (uint32_t y = 0; y < CURSOR_SIZE; y++) {
+        for (uint32_t x = 0; x < CURSOR_SIZE; x++) {
+            uint32_t target_x = (uint32_t)cursor_x + x;
+            uint32_t target_y = (uint32_t)cursor_y + y;
+            uint32_t target = (y * CURSOR_SIZE + x)
+                            * (screen_bpp >= 16 ? 4 : 1);
+            uint8_t *address = framebuffer + target_y * screen_pitch;
+            if (screen_bpp == 32) {
+                *(uint32_t *)(cursor_background + target) =
+                    ((uint32_t *)address)[target_x];
+            } else if (screen_bpp == 16) {
+                *(uint16_t *)(cursor_background + target) =
+                    ((uint16_t *)address)[target_x];
+            } else {
+                cursor_background[target] = address[target_x];
+            }
         }
     }
     cursor_saved = true;
-    for (uint32_t y = 0; shape[y][0]; y++) {
+    for (uint32_t y = 0; y < CURSOR_SIZE; y++) {
         for (uint32_t x = 0; shape[y][x]; x++) {
             if (shape[y][x] == '#') {
                 pixel((uint32_t)cursor_x + x, (uint32_t)cursor_y + y, 0);
@@ -139,48 +265,49 @@ static void cursor_show(void) {
 }
 
 static void show_panel(void) {
-    if (!active_panel) {
-        return;
-    }
-    fill(172, 126, 138, 58, 7);
-    fill(174, 128, 134, 54, 0);
-    fill(174, 128, 134, 11, active_panel == 1 ? 10 : 11);
-    text_at(179, 130, active_panel == 1 ? "SYSTEM" : "NETWORK", 0);
+    if (!active_panel) return;
+    uint32_t panel_width = 300;
+    uint32_t panel_x = screen_width - panel_width - 24;
+    uint32_t panel_y = 72;
+    gui_fill_rect(panel_x, panel_y, panel_width, 110, 7);
+    gui_fill_rect(panel_x + 2, panel_y + 2, panel_width - 4, 106, 0);
+    gui_fill_rect(panel_x + 2, panel_y + 2, panel_width - 4, 20,
+                  active_panel == 1 ? 10 : 11);
+    text_at(panel_x + 12, panel_y + 8,
+            active_panel == 1 ? "SYSTEM" : "NETWORK", 0);
     if (active_panel == 1) {
-        text_at(179, 143, "CKLOS 0.5 x86-64", 14);
-        text_at(179, 153, "GUI  320x200x256", 7);
-        text_at(179, 163, "MOUSE  PS/2 IRQ12", 11);
-        text_at(179, 173, mouse_available() ? "STATUS ONLINE" : "STATUS WAIT", 10);
+        text_at(panel_x + 12, panel_y + 32, "CKLOS 0.11 x86-64", 14);
+        text_at(panel_x + 12, panel_y + 48,
+                linear_framebuffer ? "VBE 1024x768x32" : "VGA 320x200x256", 7);
+        text_at(panel_x + 12, panel_y + 64, "MOUSE  PS/2 IRQ12", 11);
+        text_at(panel_x + 12, panel_y + 80,
+                mouse_available() ? "STATUS ONLINE" : "STATUS WAIT", 10);
     } else {
-        text_at(179, 143, "RTL8139  10.0.2.15", 14);
-        text_at(179, 153, "TCP PORT 22 DEV", 7);
-        text_at(179, 163, "HOST 2222 -> 22", 11);
-        text_at(179, 173, "ICMP  READY", 10);
+        text_at(panel_x + 12, panel_y + 32, "RTL8139  10.0.2.15", 14);
+        text_at(panel_x + 12, panel_y + 48, "TCP PORT 22 DEV", 7);
+        text_at(panel_x + 12, panel_y + 64, "HOST 2222 -> 22", 11);
+        text_at(panel_x + 12, panel_y + 80, "ICMP READY", 10);
     }
 }
 
 void gui_tick(void) {
     int32_t next_x = mouse_x();
     int32_t next_y = mouse_y();
-    bool click = mouse_take_click();
-    if (next_x != cursor_x || next_y != cursor_y || click) {
-        cursor_hide();
-        cursor_x = next_x;
-        cursor_y = next_y;
-        if (click) {
-            if (cursor_y < 16 && cursor_x >= 58 && cursor_x < 92) {
-                active_panel = 1;
-                show_panel();
-            } else if (cursor_y < 16 && cursor_x >= 96 && cursor_x < 130) {
-                active_panel = 2;
-                show_panel();
-            } else if (cursor_y < 16 && cursor_x >= 134 && cursor_x < 168) {
-                active_panel = 0;
-                gui_clear();
-            }
+    bool click = editor_mode ? false : mouse_take_click();
+    if (next_x == cursor_x && next_y == cursor_y && !click) return;
+    cursor_hide();
+    cursor_x = next_x;
+    cursor_y = next_y;
+    if (click && cursor_y < 32) {
+        if (cursor_x >= 96 && cursor_x < 160) active_panel = 1;
+        else if (cursor_x >= 168 && cursor_x < 232) active_panel = 2;
+        else if (cursor_x >= 240 && cursor_x < 304) {
+            active_panel = 0;
+            gui_clear();
         }
-        cursor_show();
+        show_panel();
     }
+    cursor_show();
 }
 
 void gui_init(void) {
@@ -190,13 +317,16 @@ void gui_init(void) {
     background = 0;
     active_panel = 0;
     cursor_saved = false;
+    cursor_x = (int32_t)screen_width / 2;
+    cursor_y = (int32_t)screen_height / 2;
+    mouse_set_bounds((int32_t)screen_width, (int32_t)screen_height);
     chrome();
     cursor_show();
     serial_write("\x1B[2J\x1B[H");
 }
 
 void gui_clear(void) {
-    fill(TEXT_X, TEXT_Y, TEXT_COLUMNS * 8, TEXT_ROWS * 8, background);
+    gui_fill_rect(text_x, text_y, text_columns * 8, text_rows * 8, background);
     row = 0;
     column = 0;
     serial_write("\x1B[2J\x1B[H");
@@ -212,54 +342,88 @@ uint8_t gui_color(void) {
 }
 
 static void scroll(void) {
-    if (row < TEXT_ROWS) {
-        return;
+    if (row < text_rows) return;
+    for (uint32_t line = 0; line < (text_rows - 1) * 16; line++) {
+        for (uint32_t x = 0; x < text_columns * 8; x++) {
+            uint32_t source_x = text_x + x;
+            uint32_t source_y = text_y + line + 16;
+            uint32_t target_y = text_y + line;
+            uint8_t *source = framebuffer + source_y * screen_pitch;
+            uint8_t *target = framebuffer + target_y * screen_pitch;
+            if (screen_bpp == 32) {
+                ((uint32_t *)target)[source_x] =
+                    ((uint32_t *)source)[source_x];
+            } else if (screen_bpp == 16) {
+                ((uint16_t *)target)[source_x] =
+                    ((uint16_t *)source)[source_x];
+            } else {
+                target[source_x] = source[source_x];
+            }
+        }
     }
-    uint32_t bytes = TEXT_COLUMNS * 8;
-    for (uint32_t line = 0; line < (TEXT_ROWS - 1) * 8; line++) {
-        memmove(framebuffer + (TEXT_Y + line) * GUI_WIDTH + TEXT_X,
-                framebuffer + (TEXT_Y + line + 8) * GUI_WIDTH + TEXT_X,
-                bytes);
-    }
-    fill(TEXT_X, TEXT_Y + (TEXT_ROWS - 1) * 8, bytes, 8, background);
-    row = TEXT_ROWS - 1;
+    gui_fill_rect(text_x, text_y + (text_rows - 1) * 16,
+                  text_columns * 8, 16, background);
+    row = text_rows - 1;
 }
 
 void gui_putc(char character) {
+    uint8_t byte = (uint8_t)character;
+    if (utf8_pending_length) {
+        utf8_pending[utf8_pending_length++] = byte;
+        if (utf8_pending_length == utf8_pending_expected) {
+            uint32_t consumed;
+            uint32_t codepoint = utf8_decode((const char *)utf8_pending, &consumed);
+            uint32_t cells = unicode_width(codepoint);
+            gui_fill_rect(text_x + column * 8, text_y + row * 16,
+                          cells * 8, 16, background);
+            draw_codepoint(text_x + column * 8, text_y + row * 16,
+                           codepoint, foreground, background);
+            column += cells;
+            utf8_pending_length = 0;
+            if (column >= text_columns) {
+                column = 0;
+                row++;
+            }
+            scroll();
+        }
+        return;
+    }
+    if (byte >= 0xC0) {
+        utf8_pending[0] = byte;
+        utf8_pending_length = 1;
+        utf8_pending_expected = byte >= 0xF0 ? 4 : byte >= 0xE0 ? 3 : 2;
+        return;
+    }
     if (character == '\n') {
         column = 0;
         row++;
     } else if (character == '\r') {
         column = 0;
     } else if (character == '\b') {
-        if (column) {
-            column--;
-        } else if (row) {
+        if (column) column--;
+        else if (row) {
             row--;
-            column = TEXT_COLUMNS - 1;
+            column = text_columns - 1;
         }
-        fill(TEXT_X + column * 8, TEXT_Y + row * 8, 8, 8, background);
+        gui_fill_rect(text_x + column * 8, text_y + row * 16, 8, 16, background);
     } else if (character == '\t') {
         for (uint32_t spaces = 4 - column % 4; spaces; spaces--) {
             gui_putc(' ');
         }
         return;
-    } else if ((uint8_t)character >= 32) {
-        uint8_t byte = (uint8_t)character;
-        if (byte >= 128) {
-            byte = '?';
-        }
-        fill(TEXT_X + column * 8, TEXT_Y + row * 8, 8, 8, background);
+    } else if (byte >= 32) {
+        if (byte >= 128) byte = '?';
+        gui_fill_rect(text_x + column * 8, text_y + row * 16, 8, 16, background);
         for (uint32_t glyph_y = 0; glyph_y < 8; glyph_y++) {
             uint8_t bits = (uint8_t)font8x8_basic[byte][glyph_y];
             for (uint32_t glyph_x = 0; glyph_x < 8; glyph_x++) {
                 if (bits & (1U << glyph_x)) {
-                    pixel(TEXT_X + column * 8 + glyph_x,
-                          TEXT_Y + row * 8 + glyph_y, foreground);
+                    pixel(text_x + column * 8 + glyph_x,
+                          text_y + row * 16 + glyph_y, foreground);
                 }
             }
         }
-        if (++column == TEXT_COLUMNS) {
+        if (++column == text_columns) {
             column = 0;
             row++;
         }

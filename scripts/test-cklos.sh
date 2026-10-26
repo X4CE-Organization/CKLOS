@@ -105,6 +105,16 @@ set +e
     sleep 0.2
     printf 'fscat /home/cklos/deep/中文/你好.txt\r'
     sleep 0.2
+    printf 'cki /home/cklos/cki-test.txt\r'
+    sleep 1
+    printf '你好 CKLOS editor\r'
+    sleep 0.5
+    printf '\023'
+    sleep 0.5
+    printf '\021'
+    sleep 1
+    printf 'fscat /home/cklos/cki-test.txt\r'
+    sleep 0.3
     printf 'elfexec /bin/USERHELLO.ELF\r'
     sleep 0.8
     printf 'elfexec /bin/USERFORK.ELF\r'
@@ -178,9 +188,9 @@ if [ "$status" -ne 33 ] && [ "$status" -ne 0 ]; then
 fi
 
 for expected in \
-    'CKLOS 0.10.0 kernel is running' \
+    'CKLOS 0.11.0 kernel is running' \
     'CKLOS>' \
-    'OS        CKLOS 0.10.0' \
+    'OS        CKLOS 0.11.0' \
     'PIT 100 Hz' \
     'Uptime' \
     'Heap allocator: PASS' \
@@ -212,6 +222,8 @@ for expected in \
     'FSCHECK: metadata valid' \
     'persistence survives reboot' \
     '你好 CKLOS' \
+    'VBE linear 1024x768x32' \
+    '你好 CKLOS editor' \
     'CKLOS ring-3 ELF64 user program is running.' \
     'Cooperative user-mode system call round trip complete.' \
     'child: fork returned 0' \
@@ -261,6 +273,8 @@ set +e
     sleep 0.3
     printf 'fsls /home/cklos/deep\r'
     sleep 0.3
+    printf 'fscat /home/cklos/cki-test.txt\r'
+    sleep 0.3
     printf 'shutdown\r'
     sleep 1
 } | "$QEMU" \
@@ -292,7 +306,8 @@ for expected in \
     'persistence survives reboot' \
     'FSCHECK: metadata valid' \
     '你好 CKLOS' \
-    'renamed.bin  32768 bytes'
+    'renamed.bin  32768 bytes' \
+    '你好 CKLOS editor'
 do
     if ! grep -F "$expected" "$PERSIST_LOG" >/dev/null; then
         echo "Persistence test failed: missing '$expected'" >&2

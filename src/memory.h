@@ -10,6 +10,12 @@ typedef struct {
     uint32_t entry_count;
     uint32_t map_address;
     uint32_t boot_drive;
+    uint32_t framebuffer;
+    uint32_t width;
+    uint32_t height;
+    uint32_t pitch;
+    uint32_t bpp;
+    uint32_t video_mode;
 } boot_info;
 
 typedef struct {

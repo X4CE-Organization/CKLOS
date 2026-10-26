@@ -1,6 +1,7 @@
 #include "console.h"
 #include "disk.h"
 #include "fs2.h"
+#include "gui.h"
 #include "interrupts.h"
 #include "memory.h"
 #include "mouse.h"
@@ -9,10 +10,12 @@
 #include "rks.h"
 #include "shell.h"
 #include "tasks.h"
+#include "unicode.h"
 #include "vfs.h"
 #include "version.h"
 
 void kernel_main(const boot_info *info) {
+    gui_configure(info);
     console_init();
     memory_init(info);
     vfs_init();
@@ -20,6 +23,7 @@ void kernel_main(const boot_info *info) {
     disk_init();
     disk_load_filesystem();
     fs2_init();
+    unicode_init("/usr/share/fonts/unifont.bin");
     network_init();
     mouse_init();
     interrupts_init();

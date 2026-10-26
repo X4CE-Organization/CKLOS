@@ -10,5 +10,6 @@ int32_t mouse_y(void);
 bool mouse_left_down(void);
 bool mouse_take_click(void);
 bool mouse_available(void);
+void mouse_set_bounds(int32_t width, int32_t height);
 
 #endif

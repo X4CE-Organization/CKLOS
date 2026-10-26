@@ -314,6 +314,12 @@ static bool create_address_space(process *slot) {
     pml4[0] = pdpt_page | PAGE_USER;
     uint64_t *pdpt = (uint64_t *)(uintptr_t)pdpt_page;
     pdpt[0] = 0x3003;
+    uint64_t *kernel_pdpt = (uint64_t *)(uintptr_t)0x2000;
+    for (uint32_t index = 1; index < 512; index++) {
+        if (kernel_pdpt[index] & PAGE_PRESENT) {
+            pdpt[index] = kernel_pdpt[index];
+        }
+    }
     slot->brk_start = USER_BASE;
     slot->brk_current = USER_BASE;
     slot->brk_limit = USER_BASE;

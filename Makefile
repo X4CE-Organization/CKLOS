@@ -5,6 +5,7 @@ BUILD := build
 IMAGE := $(BUILD)/cklos.img
 DATA_IMAGE := $(BUILD)/cklos-data.img
 FS2_IMAGE := $(BUILD)/cklos-fs2.img
+UNIFONT_IMAGE := $(BUILD)/UNIFONT.BIN
 USER_HELLO_ELF := $(BUILD)/USERHELLO.ELF
 USER_FORK_ELF := $(BUILD)/USERFORK.ELF
 USER_FAULT_ELF := $(BUILD)/USERFAULT.ELF
@@ -68,7 +69,8 @@ CRYPTO_CFLAGS := --target=x86_64-none-elf -m64 -std=c11 -O2 \
 
 C_SOURCES := src/kernel.c src/console.c src/serial.c src/keyboard.c \
 	src/string.c src/memory.c src/vfs.c src/disk.c src/interrupts.c \
-	src/network.c src/gui.c src/mouse.c src/rks.c src/fs2.c src/tasks.c src/shell.c
+	src/network.c src/gui.c src/mouse.c src/rks.c src/fs2.c src/unicode.c \
+	src/editor.c src/tasks.c src/shell.c
 C_SOURCES := $(C_SOURCES) src/process.c src/rks2.c
 C_OBJECTS := $(patsubst src/%.c,$(BUILD)/%.o,$(C_SOURCES))
 VENDOR_SOURCES := \
@@ -101,7 +103,7 @@ DEPFILES := $(C_OBJECTS:.o=.d)
 
 -include $(DEPFILES)
 
-.PHONY: all image run term test check release clean doctor help crypto font fs2 musl cck keys
+.PHONY: all image run term test check release clean doctor help crypto font unifont fs2 musl cck keys
 
 all: image
 
@@ -236,6 +238,14 @@ crypto:
 font:
 	@./scripts/fetch-font.sh
 
+unifont:
+	@./scripts/fetch-unifont.sh
+
+$(UNIFONT_IMAGE): scripts/fetch-unifont.sh tools/make-unifont.py | $(BUILD)
+	@./scripts/fetch-unifont.sh
+	python3 tools/make-unifont.py $@ third_party/unifont/unifont-base.hex \
+		third_party/unifont/wqy.hex
+
 fs2:
 	@./scripts/fetch-littlefs.sh
 
@@ -265,12 +275,14 @@ $(BUILD)/kernel.bin: $(BUILD)/kernel.elf
 	$(OBJCOPY) -O binary $< $@
 
 $(BUILD)/fs2-root/.stamp: $(BUILD)/HELLO.RKS $(USER_ELVES) \
-	tools/make-fs2-root.py $(MUSL_STAMP) $(CCK_STAMP) | $(BUILD)
+	tools/make-fs2-root.py $(MUSL_STAMP) $(CCK_STAMP) \
+	$(UNIFONT_IMAGE) | $(BUILD)
 	python3 tools/make-fs2-root.py $(BUILD)/fs2-root $(BUILD)/HELLO.RKS \
 		$(USER_ELVES) --musl $(MUSL_STAGE) \
 		--toolchain $(CCK_STAGE) --sample programs/cck_hello.c \
 		--sdk include --license third_party/musl/COPYRIGHT \
-		--tinycc-license third_party/tinycc/COPYING
+		--tinycc-license third_party/tinycc/COPYING \
+		--font $(UNIFONT_IMAGE) --unifont-license third_party/unifont/COPYING
 	touch $@
 
 $(BUILD)/mkfs2: tools/mkfs2.c third_party/littlefs/lfs.c third_party/littlefs/lfs_util.c | fs2 $(BUILD)

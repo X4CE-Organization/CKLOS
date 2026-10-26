@@ -1,6 +1,8 @@
 #include "console.h"
 #include "disk.h"
+#include "editor.h"
 #include "fs2.h"
+#include "gui.h"
 #include "interrupts.h"
 #include "io.h"
 #include "keyboard.h"
@@ -13,6 +15,7 @@
 #include "shell.h"
 #include "string.h"
 #include "tasks.h"
+#include "unicode.h"
 #include "vfs.h"
 #include "version.h"
 
@@ -138,6 +141,7 @@ static void command_help(void) {
         "  ELFEXEC FILE.ELF  Run a static ELF64 program in ring 3\n"
         "  PROCS             Show isolated process count and current PID\n"
         "  CCK ARGS          Run the native TinyCC-based C compiler\n"
+        "  CKI FILE          Open the non-modal UTF-8 GUI editor\n"
         "  FSLS / FSCD       Browse the CKLOSFS2 directory tree\n"
         "  FSWRITE / FSCAT   Write or read CKLOSFS2 files\n"
         "  FSFILL FILE BYTES Create a variable-length test file\n"
@@ -216,7 +220,13 @@ static void command_sysinfo(void) {
     console_printf("Pointer   PS/2 mouse %s\n", mouse_available() ? "online" : "offline");
     console_write("Interrupt IDT, PIC 0x20, PIT 100 Hz, PS/2 mouse IRQ12\n");
     console_printf("Timer     %u ticks\n", timer_ticks());
-    console_write("Display   VGA mode 13h 320x200 GUI + COM1 serial\n");
+    if (gui_linear()) {
+        console_printf("Display   VBE linear %ux%ux%u GUI + COM1 serial\n",
+                       gui_width(), gui_height(), gui_bpp());
+    } else {
+        console_printf("Display   VGA mode 13h %ux%ux%u GUI + COM1 serial\n",
+                       gui_width(), gui_height(), gui_bpp());
+    }
     print_cpu_feature("FPU       ", 1U << 0);
     print_cpu_feature("SSE       ", 1U << 25);
     print_cpu_feature("TSC       ", 1U << 4);
@@ -916,6 +926,16 @@ static void command_processes(void) {
                    process_count(), process_current_pid());
 }
 
+static void command_cki(int argc) {
+    if (argc != 2) {
+        console_write("Usage: CKI FILE\n");
+        return;
+    }
+    if (!editor_open(arguments[1], true)) {
+        console_write("CKI: cannot open file.\n");
+    }
+}
+
 static void command_cck(int argc) {
     if (argc == 2
         && (strcmp(arguments[1], "-v") == 0
@@ -1395,6 +1415,8 @@ static void run_command(int argc) {
         command_processes();
     } else if (strcmp(arguments[0], "cck") == 0) {
         command_cck(argc);
+    } else if (strcmp(arguments[0], "cki") == 0) {
+        command_cki(argc);
     } else if (strcmp(arguments[0], "rks") == 0) {
         command_rks();
     } else if (strcmp(arguments[0], "fsls") == 0) {
@@ -1558,9 +1580,15 @@ static void read_line(void) {
         }
         if (key == '\b') {
             if (length) {
-                length--;
+                uint32_t previous = utf8_previous(line, length);
+                uint32_t consumed;
+                uint32_t codepoint = utf8_decode(line + previous, &consumed);
+                uint32_t cells = unicode_width(codepoint);
+                length = previous;
                 line[length] = '\0';
-                console_putc('\b');
+                for (uint32_t erase = 0; erase < cells; erase++) {
+                    console_putc('\b');
+                }
                 history_cursor = history_count;
             }
             continue;

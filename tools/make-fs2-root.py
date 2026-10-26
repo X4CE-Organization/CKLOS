@@ -37,6 +37,8 @@ toolchain = None
 sample = None
 sdk = None
 tinycc_license = None
+font = None
+unifont_license = None
 arguments = sys.argv[3:]
 index = 0
 while index < len(arguments):
@@ -59,6 +61,12 @@ while index < len(arguments):
     elif argument == "--tinycc-license":
         index += 1
         tinycc_license = pathlib.Path(arguments[index])
+    elif argument == "--font":
+        index += 1
+        font = pathlib.Path(arguments[index])
+    elif argument == "--unifont-license":
+        index += 1
+        unifont_license = pathlib.Path(arguments[index])
     else:
         executables.append(pathlib.Path(argument))
     index += 1
@@ -104,6 +112,16 @@ if tinycc_license is not None:
     target = root / "usr" / "share" / "licenses" / "tinycc"
     target.mkdir(parents=True, exist_ok=True)
     shutil.copy2(tinycc_license, target / "COPYING")
+
+if font is not None:
+    target = root / "usr" / "share" / "fonts"
+    target.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(font, target / "unifont.bin")
+
+if unifont_license is not None:
+    target = root / "usr" / "share" / "licenses" / "unifont"
+    target.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(unifont_license, target / "COPYING")
 
 if license is not None:
     license_target = root / "usr" / "share" / "licenses" / "musl"

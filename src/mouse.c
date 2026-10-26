@@ -8,6 +8,15 @@ static bool click_pending;
 static bool initialized;
 static uint8_t packet[3];
 static uint32_t packet_index;
+static int32_t screen_width = 320;
+static int32_t screen_height = 200;
+
+void mouse_set_bounds(int32_t width, int32_t height) {
+    screen_width = width > 16 ? width : 16;
+    screen_height = height > 16 ? height : 16;
+    if (cursor_x >= screen_width) cursor_x = screen_width - 1;
+    if (cursor_y >= screen_height) cursor_y = screen_height - 1;
+}
 
 static bool wait_input_clear(void) {
     for (uint32_t timeout = 0; timeout < 100000; timeout++) {
@@ -97,14 +106,14 @@ void mouse_irq_handler(void) {
             if (cursor_x < 0) {
                 cursor_x = 0;
             }
-            if (cursor_x > 319) {
-                cursor_x = 319;
+            if (cursor_x >= screen_width) {
+                cursor_x = screen_width - 1;
             }
             if (cursor_y < 0) {
                 cursor_y = 0;
             }
-            if (cursor_y > 199) {
-                cursor_y = 199;
+            if (cursor_y >= screen_height) {
+                cursor_y = screen_height - 1;
             }
         }
     }

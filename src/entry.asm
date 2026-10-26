@@ -10,6 +10,7 @@ kernel_entry:
     mov rsp, 0x90000
     xor rbp, rbp
     cld
+    mov rbx, rdi
 
     mov rdi, __bss_start
     mov rcx, __bss_end
@@ -17,7 +18,7 @@ kernel_entry:
     xor eax, eax
     rep stosb
 
-    xor edi, edi
+    mov rdi, rbx
     call kernel_main
 
 .halt:

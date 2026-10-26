@@ -127,6 +127,19 @@ static uint16_t serial_read_escape(void) {
     if (key == 'D') {
         return KEY_LEFT;
     }
+    if (key == 'H') {
+        return KEY_HOME;
+    }
+    if (key == 'F') {
+        return KEY_END;
+    }
+    if (key == '5' || key == '6') {
+        wait = 200000;
+        while (!serial_can_read() && wait--) cpu_pause();
+        if (serial_can_read() && serial_read_char() == '~') {
+            return key == '5' ? KEY_PAGE_UP : KEY_PAGE_DOWN;
+        }
+    }
     return KEY_ESCAPE;
 }
 

@@ -7,8 +7,8 @@ This file is the source of truth for the batched native-toolchain implementation
 | CKLOSFS2 and directories | 0.8.0 | complete and tested |
 | ELF64, ring 3, syscalls, libc | 0.9.0 | complete and tested |
 | TinyCC and cck | 0.10.0 | complete and tested |
-| VBE, Unicode and cki | 0.11.0 | next |
-| IPv4/IPv6, cwgt and curl | 0.12.0 | pending |
+| VBE, Unicode and cki | 0.11.0 | complete and tested |
+| IPv4/IPv6, cwgt and curl | 0.12.0 | next |
 | Clang/GCC C++ evaluation | 0.13.0 | pending |
 
 Rules:
@@ -92,3 +92,27 @@ Known limitation:
 - TinyCC does not implement the entire C23 language surface. The modes and
   headers are installed, but full external conformance-suite coverage remains
   ongoing rather than being represented as ISO certification.
+
+## 0.11.0 checkpoint
+
+Completed:
+
+- VBE 1024x768x32 linear framebuffer, with 800x600 and VGA mode 13h fallbacks.
+- Stage-two framebuffer discovery, mode selection and boot-info handoff.
+- Dynamic GUI layout, high-resolution mouse bounds and 32/16/8-bit rendering.
+- Pinned GNU Unifont 18.0.01 plus WQY CJK glyph data generated into FS2.
+- UTF-8 decoding, encoding, previous-code-point navigation and CJK text drawing.
+- Non-modal `cki` editor with line numbers, mouse caret placement, scrolling,
+  find, save, open, UTF-8 backspace and last-edit undo.
+- 8 MiB editor buffer and CRLF-to-LF normalization.
+
+Verification:
+
+- QEMU reports `VBE linear 1024x768x32`.
+- `cki` creates and reopens Chinese text through CKLOSFS2.
+- UTF-8 content survives the second QEMU boot.
+
+Known limitation:
+
+- `cki` currently runs as a protected kernel GUI service rather than a ring-3
+  client of a future compositor/windowing protocol.

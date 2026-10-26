@@ -40,6 +40,17 @@
 - IRQ12：读取 PS/2 鼠标三字节数据包并更新软件光标。
 - CPU 异常：输出名称、错误码和 EIP 后停止系统，避免继续破坏状态。
 
+## Graphics
+
+The second-stage loader queries VBE, selects a 1024x768x32 linear mode and maps
+the third and fourth GiB of physical memory through a second page directory so
+the framebuffer address is available in long mode. The kernel falls back to
+800x600x32 and then VGA mode 13h.
+
+The GUI supports 32-bit, 16-bit and 8-bit framebuffer writes with a dynamic
+layout. GNU Unifont/WQY glyph data is loaded from CKLOSFS2 into the kernel heap;
+the console and `cki` use the same UTF-8 decoder and glyph renderer.
+
 ## Scheduler
 
 调度器支持 8 个 ring-0 内核任务。每个任务拥有 16 KiB 栈，64 位上下文由 `task_switch.asm` 保存 SysV 非易失寄存器和栈指针。

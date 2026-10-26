@@ -2,6 +2,16 @@
 
 All notable changes to CKLOS are documented here.
 
+## 0.11.0 — 2026-10-27
+
+### Added
+
+- VBE 1024x768x32 linear graphics with 800x600 and VGA fallbacks.
+- Dynamic high-resolution GUI layout and bounded high-resolution mouse cursor.
+- Pinned GNU Unifont 18.0.01/WQY CJK bitmap data and UTF-8 rendering.
+- Non-modal full-screen `cki` editor with Chinese paths and content.
+- Editor save/open/find/undo, mouse caret positioning, scrolling and UTF-8 deletion.
+
 ## 0.10.0 — 2026-10-27
 
 ### Added
