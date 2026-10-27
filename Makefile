@@ -22,7 +22,7 @@ CCK_STAGE := $(BUILD)/cklos-toolchain
 CCK_STAMP := $(BUILD)/tinycc/.cklos-ready
 USER_ELVES := $(USER_HELLO_ELF) $(USER_FORK_ELF) $(USER_FAULT_ELF) \
 	$(USER_EXEC_ELF) $(USER_IO_ELF) $(USER_PIPE_ELF) $(MUSL_ELF)
-KERNEL_MAX_BYTES := 262144
+KERNEL_MAX_BYTES := 524288
 VERSION := $(shell grep 'CKLOS_VERSION "' src/version.h | cut -d '"' -f2)
 
 NASM ?= $(shell command -v nasm 2>/dev/null)
@@ -74,7 +74,7 @@ C_SOURCES := src/kernel.c src/console.c src/serial.c src/keyboard.c \
 	src/string.c src/memory.c src/vfs.c src/disk.c src/interrupts.c \
 	src/network.c src/gui.c src/mouse.c src/rks.c src/fs2.c src/unicode.c \
 	src/editor.c src/resolver.c src/http.c src/tls.c src/tasks.c src/shell.c
-C_SOURCES := $(C_SOURCES) src/process.c src/rks2.c
+C_SOURCES := $(C_SOURCES) src/process.c src/rks2.c src/crypto.c src/ssh.c
 C_OBJECTS := $(patsubst src/%.c,$(BUILD)/%.o,$(C_SOURCES))
 VENDOR_SOURCES := \
 	third_party/monocypher/src/monocypher.c \
@@ -98,11 +98,7 @@ VENDOR_OBJECTS := $(patsubst %.c,$(BUILD)/vendor/%.o,$(VENDOR_SOURCES))
 FS2_SOURCES := third_party/littlefs/lfs.c third_party/littlefs/lfs_util.c
 FS2_OBJECTS := $(patsubst %.c,$(BUILD)/vendor/%.o,$(FS2_SOURCES))
 OBJECTS := $(BUILD)/entry.o $(BUILD)/interrupt_stubs.o $(BUILD)/task_switch.o \
-	$(BUILD)/process_asm.o $(C_OBJECTS) $(FS2_OBJECTS) \
-	$(BUILD)/vendor/third_party/bearssl/src/hash/sha2small.o \
-	$(BUILD)/vendor/third_party/bearssl/src/codec/enc32be.o \
-	$(BUILD)/vendor/third_party/bearssl/src/codec/dec32be.o \
-	$(BEARSSL_LIB)
+	$(BUILD)/process_asm.o $(C_OBJECTS) $(VENDOR_OBJECTS) $(BEARSSL_LIB)
 DEPFILES := $(C_OBJECTS:.o=.d)
 
 -include $(DEPFILES)

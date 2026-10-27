@@ -38,7 +38,7 @@ BIOS -> CKLOS 两阶段引导器 -> x86-64 长模式 -> C 内核 -> CKLOS GUI
 - CMOS 实时时钟、CPU 信息、内存布局和设备诊断
 - 整数计算、十六进制查看、颜色主题和 PC 扬声器测试
 
-这是 CKLOS 0.13.1 的开源 x86-64 图形内核版本。它已经有长模式、分页、任务切换、两级持久化存储、ELF64 用户态隔离、静态 musl libc、系统内 C 编译器、VBE 高分辨率图形、UTF-8 编辑器、IPv4/IPv6 TCP、DNS、HTTP、TLS 和可执行文件。0.13.0 同时提供 Clang/LLVM 与 GCC 的 C++ 前端独立评估，但尚未提供 C++ 编译器。系统还不是 Linux 那样的完整通用操作系统：SSH、USB 和完整桌面尚未完成。
+这是 CKLOS 0.14.0 的开源 x86-64 图形内核版本。它已经有长模式、分页、任务切换、两级持久化存储、ELF64 用户态隔离、静态 musl libc、系统内 C 编译器、VBE 高分辨率图形、UTF-8 编辑器、IPv4/IPv6 TCP、DNS、HTTP、TLS、SSH 和可执行文件。0.13.0 同时提供 Clang/LLVM 与 GCC 的 C++ 前端独立评估，但尚未提供 C++ 编译器。系统还不是 Linux 那样的完整通用操作系统：USB、完整桌面和更完整的 curl/wget 兼容性尚未完成。
 
 ## 安装依赖
 
@@ -166,11 +166,14 @@ freestanding C++23 目标文件；GCC 与标准库移植的依赖、许可证、
 
 `cki` 使用 VBE 线性帧缓冲和 GNU Unifont/WQY 中文点阵字体。`Ctrl+S` 保存，`Ctrl+O` 打开，`Ctrl+F` 查找，`Ctrl+Z` 撤销，`Ctrl+Q` 退出；鼠标点击可定位光标。
 
-## SSH 开发状态
+## SSH
 
 当前稳定构建已经包含 RTL8139、ARP、IPv4、ICMP 和 TCP，并配置了 QEMU 主机端口 `2222` 到客户机端口 `22` 的转发。`ping 10.0.2.2` 和主机 TCP 连接均已验证。
 
-SSH-2 传输、公钥认证和 PTY 通道的实现保存在 `src/ssh.c`，密码学依赖使用固定版本 Monocypher 与 BearSSL。两级引导器和 ring 3 进程已经可用，但 SSH 仍处于未启用状态，因为登录会话、PTY 语义和完整信号交付尚未完成。请勿把当前 `2222` 端口当作可用的 SSH 服务。
+SSH-2 服务端使用 Curve25519、Ed25519、AES-128-CTR 和 HMAC-SHA256，
+支持 `cklos` 公钥登录、PTY、Shell 和单次命令。首次构建会生成
+`keys/cklos_user`，连接方法见 [docs/SSH.md](docs/SSH.md)。当前限制是单客户端、
+仅公钥认证，尚未实现 SFTP、端口转发和完整窗口流控。
 
 ## 开源项目
 
@@ -218,5 +221,5 @@ linker.ld               内核链接布局
 ## 网络与后续路线
 
 HTTP/1.1、HTTPS、DNS A/AAAA 查询和 IPv4/IPv6 客户端工具已经可用，并同时
-验证本地测试 CA 与固定 Mozilla CA bundle。SSH、HTTP/2/3 和完整代理支持
-仍在后续批次。
+验证本地测试 CA 与固定 Mozilla CA bundle。SSH 已可用，HTTP/2/3、完整代理和
+更完整的 curl/wget 参数仍在后续批次。

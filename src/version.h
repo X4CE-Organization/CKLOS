@@ -2,6 +2,6 @@
 #define CKLOS_VERSION_H
 
 #define CKLOS_NAME "CKLOS"
-#define CKLOS_VERSION "0.13.1"
+#define CKLOS_VERSION "0.14.0"
 
 #endif

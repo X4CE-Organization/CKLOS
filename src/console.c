@@ -1,6 +1,7 @@
 #include "console.h"
 #include "gui.h"
 #include "serial.h"
+#include "ssh.h"
 #include "string.h"
 
 void console_init(void) {
@@ -29,6 +30,7 @@ void console_putc(char character) {
     }
 
     gui_putc(character);
+    ssh_console_putc(character);
 }
 
 void console_write(const char *text) {

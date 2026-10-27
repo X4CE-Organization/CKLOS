@@ -9,6 +9,7 @@
 #include "process.h"
 #include "rks.h"
 #include "shell.h"
+#include "ssh.h"
 #include "tasks.h"
 #include "unicode.h"
 #include "vfs.h"
@@ -30,6 +31,7 @@ void kernel_main(const boot_info *info) {
     tasks_init();
     process_init();
     interrupts_enable();
+    ssh_init();
     console_set_color(COLOR_LIGHT_GRAY, COLOR_BLACK);
     console_write(
         "\n"

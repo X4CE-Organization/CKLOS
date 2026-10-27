@@ -2,6 +2,16 @@
 
 All notable changes to CKLOS are documented here.
 
+## 0.14.0 — 2026-10-27
+
+### Added
+
+- Encrypted SSH-2 server on guest port 22 with QEMU forwarding to host port
+  2222.
+- Curve25519 key exchange, Ed25519 host keys and authorized-key authentication.
+- AES-128-CTR and HMAC-SHA256 transport, PTY/shell/exec session channels.
+- OpenSSH integration test covering authentication and remote `uname`.
+
 ## 0.13.1 — 2026-10-27
 
 ### Fixed

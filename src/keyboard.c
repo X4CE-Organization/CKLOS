@@ -5,6 +5,7 @@
 #include "mouse.h"
 #include "network.h"
 #include "serial.h"
+#include "ssh.h"
 #include "tasks.h"
 
 static bool shift_down;
@@ -186,6 +187,13 @@ uint16_t input_getchar(void) {
             if (character == 0x7F) {
                 return '\b';
             }
+            return character;
+        }
+        char ssh_character;
+        if (ssh_console_read(&ssh_character)) {
+            character = (uint8_t)ssh_character;
+            if (character == '\r') return '\n';
+            if (character == 0x7F) return '\b';
             return character;
         }
         network_poll();

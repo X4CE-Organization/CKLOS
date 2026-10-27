@@ -35,7 +35,8 @@ void cklos_random_bytes(void *output, size_t length) {
         uint32_t low;
         uint32_t high;
         __asm__ volatile("rdtsc" : "=a"(low), "=d"(high));
-        words[index] = low ^ high ^ timer_ticks() ^ (uint32_t)output ^ index;
+        words[index] = low ^ high ^ timer_ticks()
+                     ^ (uint32_t)(uintptr_t)output ^ index;
         cpu_pause();
     }
     br_hmac_drbg_context drbg;

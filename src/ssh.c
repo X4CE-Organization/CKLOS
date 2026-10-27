@@ -7,7 +7,7 @@
 
 #include "keys.h"
 
-#define SSH_SERVER_VERSION "SSH-2.0-" CKLOS_NAME "_0.5"
+#define SSH_SERVER_VERSION "SSH-2.0-" CKLOS_NAME "_" CKLOS_VERSION
 #define SSH_MAX_PACKET 4096
 #define SSH_INPUT_SIZE 512
 
@@ -79,6 +79,47 @@ static uint8_t console_input[SSH_INPUT_SIZE];
 static uint32_t console_input_head;
 static uint32_t console_input_tail;
 static char status_text[48] = "listening";
+static bool remote_exec_active;
+static char remote_output_tail[8];
+static uint32_t remote_output_length;
+
+static void send_message(const uint8_t *payload, uint32_t length);
+static void write_u32(uint8_t *output, uint32_t value);
+static uint32_t put_string(uint8_t *output, const void *data, uint32_t length);
+
+static void queue_console_bytes(const uint8_t *data, uint32_t length) {
+    for (uint32_t index = 0; index < length; index++) {
+        uint32_t next = (console_input_head + 1) % SSH_INPUT_SIZE;
+        if (next == console_input_tail) break;
+        console_input[console_input_head] = data[index];
+        console_input_head = next;
+    }
+}
+
+static void close_remote_channel(void) {
+    uint32_t offset = 0;
+    send_payload[offset++] = SSH_MSG_CHANNEL_REQUEST;
+    write_u32(send_payload + offset, client_channel);
+    offset += 4;
+    offset += put_string(send_payload + offset, "exit-status", 11);
+    send_payload[offset++] = 0;
+    write_u32(send_payload + offset, 0);
+    offset += 4;
+    send_message(send_payload, offset);
+    offset = 0;
+    send_payload[offset++] = SSH_MSG_CHANNEL_EOF;
+    write_u32(send_payload + offset, client_channel);
+    offset += 4;
+    send_message(send_payload, offset);
+    offset = 0;
+    send_payload[offset++] = SSH_MSG_CHANNEL_CLOSE;
+    write_u32(send_payload + offset, client_channel);
+    offset += 4;
+    send_message(send_payload, offset);
+    shell_active = false;
+    remote_exec_active = false;
+    channel_open = false;
+}
 
 static void write_u32(uint8_t *output, uint32_t value) {
     output[0] = (uint8_t)(value >> 24);
@@ -415,12 +456,30 @@ static void process_connection(const uint8_t *payload, uint32_t length) {
             || !read_byte(payload, length, &offset, &want_reply)) {
             return;
         }
-        bool accepted = string_equals(request, "pty-req") || string_equals(request, "shell");
+        bool accepted = string_equals(request, "pty-req")
+                     || string_equals(request, "shell")
+                     || string_equals(request, "exec");
+        if (string_equals(request, "exec")) {
+            ssh_string command;
+            if (!read_string(payload, length, &offset, &command)) {
+                accepted = false;
+            } else {
+                queue_console_bytes(command.data, command.length);
+                const uint8_t newline = '\n';
+                queue_console_bytes(&newline, 1);
+            }
+        }
         if (string_equals(request, "shell") && accepted) {
             shell_active = true;
             status_text[0] = '\0';
             strcpy(status_text, "authenticated shell");
             console_write("\r\nCKLOS SSH terminal\r\n");
+        } else if (string_equals(request, "exec") && accepted) {
+            shell_active = true;
+            remote_exec_active = true;
+            remote_output_length = 0;
+            status_text[0] = '\0';
+            strcpy(status_text, "remote command");
         }
         if (want_reply) {
             uint32_t out = 0;
@@ -440,23 +499,18 @@ static void process_connection(const uint8_t *payload, uint32_t length) {
         if (!read_string(payload, length, &offset, &data)) {
             return;
         }
-        for (uint32_t index = 0; index < data.length; index++) {
-            uint32_t next = (console_input_head + 1) % SSH_INPUT_SIZE;
-            if (next != console_input_tail) {
-                console_input[console_input_head] = data.data[index];
-                console_input_head = next;
-            }
-        }
+        queue_console_bytes(data.data, data.length);
         return;
     }
-    if (payload[0] == SSH_MSG_CHANNEL_CLOSE || payload[0] == SSH_MSG_CHANNEL_EOF) {
+    if (payload[0] == SSH_MSG_CHANNEL_EOF) {
+        return;
+    }
+    if (payload[0] == SSH_MSG_CHANNEL_CLOSE) {
         shell_active = false;
         channel_open = false;
         console_input_head = console_input_tail = 0;
         strcpy(status_text, "listening");
-        if (payload[0] == SSH_MSG_CHANNEL_CLOSE) {
-            send_message(payload, 5);
-        }
+        send_message(payload, 5);
         return;
     }
     if (payload[0] == SSH_MSG_GLOBAL_REQUEST) {
@@ -524,6 +578,7 @@ static void process_packets(void) {
         uint32_t packet_length = read_u32(header);
         if (packet_length < 5 || packet_length > SSH_MAX_PACKET
             || (receive_encrypted && ((packet_length + 4) & 15)) != 0) {
+            console_printf("SSH: invalid packet length %u\n", packet_length);
             phase = SSH_PHASE_FAILED;
             return;
         }
@@ -535,6 +590,7 @@ static void process_packets(void) {
         if (receive_encrypted) {
             uint8_t mac[32];
             uint8_t mac_input[4 + SSH_MAX_PACKET];
+            cklos_aes_ctr_crypt(&receive_cipher, input, encrypted_length);
             write_u32(mac_input, receive_sequence);
             memcpy(mac_input + 4, input, encrypted_length);
             cklos_hmac_sha256(receive_key, 32, mac_input, 4 + encrypted_length, mac);
@@ -543,13 +599,15 @@ static void process_packets(void) {
                 difference |= mac[index] ^ input[encrypted_length + index];
             }
             if (difference) {
+                console_write("SSH: MAC verification failed\n");
                 phase = SSH_PHASE_FAILED;
                 return;
             }
-            cklos_aes_ctr_crypt(&receive_cipher, input, encrypted_length);
         }
         uint8_t padding_length = input[4];
         if (padding_length < 4 || padding_length + 1 >= packet_length) {
+            console_printf("SSH: bad padding %u packet %u\n",
+                           padding_length, packet_length);
             phase = SSH_PHASE_FAILED;
             return;
         }
@@ -599,6 +657,8 @@ static void tcp_event(uint8_t event, const uint8_t *data, uint32_t length) {
         receive_encrypted = false;
         channel_open = false;
         shell_active = false;
+        remote_exec_active = false;
+        remote_output_length = 0;
         client_channel = 0;
         server_channel = 0;
         console_input_head = console_input_tail = 0;
@@ -621,6 +681,8 @@ static void tcp_event(uint8_t event, const uint8_t *data, uint32_t length) {
         }
     } else if (event == TCP_EVENT_DISCONNECTED) {
         shell_active = false;
+        remote_exec_active = false;
+        remote_output_length = 0;
         channel_open = false;
         phase = SSH_PHASE_VERSION;
         input_length = 0;
@@ -651,6 +713,20 @@ void ssh_console_putc(char character) {
     send_payload[offset++] = 1;
     send_payload[offset++] = (uint8_t)character;
     send_message(send_payload, offset);
+    if (remote_exec_active) {
+        if (remote_output_length < sizeof(remote_output_tail) - 1) {
+            remote_output_tail[remote_output_length++] = character;
+        } else {
+            memmove(remote_output_tail, remote_output_tail + 1,
+                    sizeof(remote_output_tail) - 2);
+            remote_output_tail[sizeof(remote_output_tail) - 2] = character;
+        }
+        remote_output_tail[remote_output_length] = '\0';
+        if (remote_output_length == 7
+            && memcmp(remote_output_tail, "CKLOS> ", 7) == 0) {
+            close_remote_channel();
+        }
+    }
 }
 
 bool ssh_console_read(char *character) {

@@ -26,7 +26,7 @@ python3 "$ROOT/scripts/http-test-server.py" "$ROOT/programs" \
     --key "$ROOT/build/test-key.pem" \
     >"$ROOT/build/https-test-server.log" 2>&1 &
 HTTPS_PID=$!
-trap 'kill $HTTP_PID $HTTPS_PID ${IPV6_PID:-} 2>/dev/null || true' EXIT HUP INT TERM
+trap 'kill $HTTP_PID $HTTPS_PID ${IPV6_PID:-} ${SSH_QEMU_PID:-} 2>/dev/null || true' EXIT HUP INT TERM
 sleep 1
 
 dd if=/dev/zero of="$TEST_IMAGE" bs=512 count=2880 2>/dev/null
@@ -222,9 +222,9 @@ if [ "$status" -ne 33 ] && [ "$status" -ne 0 ]; then
 fi
 
 for expected in \
-    'CKLOS 0.13.1 kernel is running' \
+    'CKLOS 0.14.0 kernel is running' \
     'CKLOS>' \
-    'OS        CKLOS 0.13.1' \
+    'OS        CKLOS 0.14.0' \
     'PIT 100 Hz' \
     'Uptime' \
     'Heap allocator: PASS' \
@@ -298,6 +298,38 @@ do
         exit 1
     fi
 done
+
+SSH_LOG="$ROOT/build/qemu-ssh-test.log"
+SSH_PORT=${SSH_TEST_PORT:-2222}
+(
+    sleep 8
+    printf 'shutdown\r'
+    sleep 1
+) | "$QEMU" \
+    -m 64M \
+    -cpu max \
+    -drive "file=$TEST_IMAGE,format=raw,if=floppy" \
+    -boot a \
+    -drive "file=$TEST_DATA_IMAGE,format=raw,if=ide,index=0" \
+    -drive "file=$TEST_FS2_IMAGE,format=raw,if=ide,index=1" \
+    -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22" \
+    -device rtl8139,netdev=net0,mac=52:54:00:12:34:56 \
+    -display none -serial stdio -monitor none -no-reboot \
+    -device isa-debug-exit >"$SSH_LOG" 2>&1 &
+SSH_QEMU_PID=$!
+sleep 2
+if ! ssh -i "$ROOT/keys/cklos_user" -p "$SSH_PORT" \
+    -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -o BatchMode=yes -o ConnectTimeout=5 -T \
+    cklos@127.0.0.1 uname >"$ROOT/build/ssh-client.log" 2>&1; then
+    cat "$ROOT/build/ssh-client.log" >&2
+    cat "$SSH_LOG" >&2
+    kill "$SSH_QEMU_PID" 2>/dev/null || true
+    exit 1
+fi
+wait "$SSH_QEMU_PID" 2>/dev/null || true
+grep -F 'CKLOS' "$ROOT/build/ssh-client.log" >/dev/null
+cat "$ROOT/build/ssh-client.log"
 
 python3 "$ROOT/scripts/ipv6-test-peer.py" \
     >"$ROOT/build/ipv6-test-peer.log" 2>&1 &

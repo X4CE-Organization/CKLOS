@@ -10,6 +10,7 @@ This file is the source of truth for the batched native-toolchain implementation
 | VBE, Unicode and cki | 0.11.0 | complete and tested |
 | IPv4/IPv6, cwgt and curl | 0.12.0 | core complete and tested; extended curl options pending |
 | Clang/GCC C++ evaluation | 0.13.0 | complete: probe and reports, no C++ compiler |
+| SSH-2 server | 0.14.0 | complete and tested with OpenSSH |
 
 Rules:
 
@@ -159,3 +160,17 @@ Not delivered:
 
 - No C++ compiler, libc++, libstdc++, exception runtime or C++ ABI is claimed
   as part of this checkpoint.
+
+## 0.14.0 checkpoint
+
+Completed:
+
+- SSH-2 server on guest port 22 with QEMU host port 2222.
+- Curve25519 key exchange, Ed25519 host key/signatures and authorized-key auth.
+- AES-128-CTR plus HMAC-SHA256 packet transport.
+- PTY, shell and one-shot exec channels integrated with the CKLOS shell.
+
+Verification:
+
+- OpenSSH 9.9 completed key exchange, host signature verification, public-key
+  authentication, remote `uname`, exit status and channel close.
