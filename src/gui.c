@@ -204,7 +204,8 @@ static void chrome(void) {
                   window_height - 4, 0);
     gui_fill_rect(window_x + 4, window_y + 4, window_width - 8, 28, 3);
     text_at(window_x + 14, window_y + 12, "CKLOS Terminal - 64-bit", 0);
-    text_at(window_x + window_width - 80, window_y + 12, "_ [] X", 8);
+    text_at(window_x + window_width - 152, window_y + 12,
+            "SERIAL + FRAMEBUFFER", 8);
 
     gui_fill_rect(0, status_y, screen_width, screen_height - status_y, 7);
     text_at(10, status_y + 8,
@@ -338,6 +339,10 @@ void gui_tick(void) {
         show_panel();
     }
     cursor_show();
+}
+
+void gui_invalidate_cursor(void) {
+    cursor_saved = false;
 }
 
 void gui_init(void) {

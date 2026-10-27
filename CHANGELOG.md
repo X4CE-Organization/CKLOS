@@ -2,6 +2,19 @@
 
 All notable changes to CKLOS are documented here.
 
+## 0.13.1 — 2026-10-27
+
+### Fixed
+
+- `cki` now clears and paints its complete editor surface, preventing stale
+  terminal colors and yellow shell text from bleeding through document text.
+- The editor uses a high-contrast title bar, toolbar, line-number gutter and
+  status bar with clickable Save, Open, Find, Undo, Quit and close controls.
+- PS/2 Ctrl combinations now produce real control keys, enabling Ctrl+S,
+  Ctrl+O, Ctrl+F, Ctrl+Z and Ctrl+Q in the graphical editor.
+- The software mouse cursor is invalidated and redrawn after editor frames.
+- Removed the non-functional terminal `_ [] X` decoration from the shell chrome.
+
 ## 0.13.0 — 2026-10-27
 
 ### Added

@@ -5,12 +5,14 @@
 #include "keyboard.h"
 #include "memory.h"
 #include "mouse.h"
+#include "serial.h"
 #include "string.h"
 #include "unicode.h"
 
 #define EDITOR_MAX_FILE (8U * 1024U * 1024U)
 #define EDITOR_UNDO_MAX 256U
 #define EDITOR_PATH_MAX 4096U
+#define EDITOR_TOP 68U
 
 typedef struct {
     uint8_t *text;
@@ -224,16 +226,30 @@ static void move_vertical(editor_state *editor, int direction) {
 static void draw_editor(editor_state *editor) {
     uint32_t width = gui_width();
     uint32_t height = gui_height();
-    uint32_t top = 72;
+    uint32_t top = EDITOR_TOP;
     uint32_t rows = (height - top - 64) / 16;
     uint32_t number_width = 72;
     uint32_t text_width = width - number_width - 24;
-    gui_fill_rect(0, 0, width, 30, 3);
-    gui_fill_rect(0, 30, width, 30, 8);
-    gui_draw_text(12, 7, "CKI  CKLOS UTF-8 Editor", 0, 0xFF);
-    gui_draw_text(12, 38,
-                  "Ctrl+S Save   Ctrl+O Open   Ctrl+F Find   Ctrl+Z Undo   Ctrl+Q Quit",
-                  15, 0xFF);
+    gui_fill_rect(0, 0, width, height, 0);
+    gui_fill_rect(0, 0, width, 32, 1);
+    gui_draw_text(12, 8, "CKI", 15, 0xFF);
+    gui_draw_text(52, 8, "CKLOS UTF-8 Editor", 7, 0xFF);
+    gui_draw_text(width > 520 ? width - 470 : 210, 8,
+                  editor->path, 11, 0xFF);
+    gui_fill_rect(width - 42, 4, 30, 24, 12);
+    gui_draw_text(width - 31, 8, "X", 0, 0xFF);
+
+    gui_fill_rect(0, 32, width, 36, 8);
+    uint32_t button_x = 12;
+    const char *labels[4] = {"SAVE", "OPEN", "FIND", "UNDO"};
+    const uint8_t colors[4] = {10, 11, 14, 9};
+    for (uint32_t index = 0; index < 4; index++) {
+        gui_fill_rect(button_x, 38, 64, 22, colors[index]);
+        gui_draw_text(button_x + 12, 42, labels[index], 0, 0xFF);
+        button_x += 74;
+    }
+    gui_fill_rect(width - 76, 38, 64, 22, 12);
+    gui_draw_text(width - 64, 42, "QUIT", 0, 0xFF);
     uint32_t line = 0;
     uint32_t start = 0;
     while (line < editor->top_line && start < editor->size) {
@@ -244,11 +260,11 @@ static void draw_editor(editor_state *editor) {
         uint32_t y = top + visible * 16;
         char number[16];
         uint_to_string(line + 1, number, 10);
-        gui_draw_text(12, y, number, 8, 0xFF);
+        gui_draw_text(12, y, number, 8, 0);
         if (start >= editor->size && line > editor->current_line) break;
         uint32_t end = line_end(editor, start);
         gui_draw_text_n(number_width, y, (const char *)editor->text + start,
-                        end - start, 7, 0xFF);
+                        end - start, 15, 0);
         if (line == editor->current_line) {
             uint32_t caret = number_width;
             uint32_t at = start;
@@ -279,7 +295,7 @@ static void draw_editor(editor_state *editor) {
     uint_to_string(editor->current_column + 1, number, 10);
     strcpy(position + position_length, number);
     gui_draw_text(10, height - 21, position, 15, 0xFF);
-    gui_draw_text(220, height - 21, editor->path, 11, 0xFF);
+    gui_draw_text(180, height - 21, editor->path, 11, 0xFF);
     gui_draw_text(width - 180, height - 21,
                   editor->modified ? "MODIFIED" : "READY", 14, 0xFF);
     if (editor->status[0]) {
@@ -288,7 +304,7 @@ static void draw_editor(editor_state *editor) {
 }
 
 static void ensure_cursor_visible(editor_state *editor) {
-    uint32_t rows = (gui_height() - 136) / 16;
+    uint32_t rows = (gui_height() - EDITOR_TOP - 64) / 16;
     if (editor->current_line < editor->top_line) {
         editor->top_line = editor->current_line;
     } else if (editor->current_line >= editor->top_line + rows) {
@@ -376,6 +392,8 @@ bool editor_open(const char *path, bool create) {
         return false;
     }
     gui_set_editor_mode(true);
+    serial_write("\x1B[2J\x1B[HCKI: graphical editor active. "
+                 "Use the QEMU window; Ctrl+Q returns to the shell.\n");
 
     uint8_t encoded[4];
     uint32_t pending_length = 0;
@@ -384,23 +402,52 @@ bool editor_open(const char *path, bool create) {
     while (1) {
         ensure_cursor_visible(editor);
         draw_editor(editor);
-        if (mouse_take_click() && mouse_y() >= 72
-            && mouse_y() < (int32_t)gui_height() - 64) {
+        gui_invalidate_cursor();
+        bool click = mouse_take_click();
+        int32_t click_x = mouse_x();
+        int32_t click_y = mouse_y();
+        if (click && click_y < 32 && click_x >= (int32_t)gui_width() - 160) {
+            break;
+        }
+        if (click && click_y >= 38 && click_y < 60) {
+            if (click_x >= 12 && click_x < 76) {
+                save_file(editor);
+                continue;
+            }
+            if (click_x >= 86 && click_x < 150) {
+                prompt_path(editor);
+                continue;
+            }
+            if (click_x >= 160 && click_x < 224) {
+                find_text(editor);
+                continue;
+            }
+            if (click_x >= 234 && click_x < 298) {
+                undo(editor);
+                continue;
+            }
+            if (click_x >= (int32_t)gui_width() - 76
+                && click_x < (int32_t)gui_width() - 12) {
+                break;
+            }
+        }
+        if (click && click_y >= (int32_t)EDITOR_TOP
+            && click_y < (int32_t)gui_height() - 64) {
             uint32_t wanted_line = editor->top_line
-                                 + (uint32_t)(mouse_y() - 72) / 16;
+                                 + (uint32_t)(click_y - EDITOR_TOP) / 16;
             uint32_t start = 0;
             for (uint32_t line = 0; line < wanted_line && start < editor->size;
                  line++) {
                 start = next_line(editor, start);
             }
-            uint32_t column = mouse_x() > 72
-                            ? (uint32_t)(mouse_x() - 72) / 8 : 0;
+            uint32_t column = click_x > 72
+                            ? (uint32_t)(click_x - 72) / 8 : 0;
             editor->cursor = offset_for_column(editor, start, column);
             refresh_position(editor);
         }
         uint16_t key = input_getchar();
         editor->status[0] = '\0';
-        if (key == 17) break;
+        if (key == 17 || key == KEY_ESCAPE) break;
         if (key == 19) {
             save_file(editor);
         } else if (key == 15) {

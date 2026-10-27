@@ -22,5 +22,6 @@ void gui_set_color(uint8_t foreground, uint8_t background);
 uint8_t gui_color(void);
 void gui_putc(char character);
 void gui_tick(void);
+void gui_invalidate_cursor(void);
 
 #endif

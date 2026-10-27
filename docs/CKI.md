@@ -10,7 +10,13 @@ CKLOS> cki /home/cklos/notes.txt
 The editor uses the VBE linear framebuffer, GNU Unifont glyphs for non-ASCII
 text and a normal UTF-8 byte stream on disk. Chinese text, Chinese paths, line
 numbers, scrolling and cursor positioning are supported. CRLF input is
-normalized to LF on load.
+normalized to LF on load. The editor paints its complete surface before each
+frame, so shell colors and previous terminal contents cannot show through.
+
+The title-bar close button, `QUIT` toolbar button, `Esc` and `Ctrl+Q` close the
+editor. The toolbar also provides clickable `SAVE`, `OPEN`, `FIND` and `UNDO`
+buttons. PS/2 Ctrl combinations are converted to control keys before reaching
+the editor.
 
 Key bindings:
 
@@ -22,6 +28,7 @@ Key bindings:
 - Arrow keys, Home, End, Page Up and Page Down
 - Backspace removes a complete UTF-8 code point
 - A mouse click positions the text caret
+- The title-bar `X`, `QUIT`, `SAVE`, `OPEN`, `FIND` and `UNDO` buttons
 
 The maximum editable file size is 8 MiB. The current editor is a privileged
 kernel GUI service; moving it behind a ring-3 windowing protocol remains part

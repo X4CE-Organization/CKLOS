@@ -8,6 +8,7 @@
 #include "tasks.h"
 
 static bool shift_down;
+static bool ctrl_down;
 static bool caps_lock;
 static bool extended_scancode;
 static volatile uint16_t key_queue[64];
@@ -66,6 +67,14 @@ static void handle_scancode(uint8_t scancode) {
         shift_down = false;
         return;
     }
+    if (scancode == 0x1D) {
+        ctrl_down = true;
+        return;
+    }
+    if (scancode == 0x9D) {
+        ctrl_down = false;
+        return;
+    }
     if (scancode == 0x3A) {
         caps_lock = !caps_lock;
         return;
@@ -79,6 +88,9 @@ static void handle_scancode(uint8_t scancode) {
         character = (char)(character - 'a' + 'A');
     } else if (caps_lock && shift_down && character >= 'A' && character <= 'Z') {
         character = (char)(character - 'A' + 'a');
+    }
+    if (ctrl_down && character >= 'a' && character <= 'z') {
+        character = (char)(character - 'a' + 1);
     }
     queue_key((uint8_t)character);
 }
