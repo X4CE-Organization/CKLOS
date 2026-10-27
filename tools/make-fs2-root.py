@@ -39,6 +39,7 @@ sdk = None
 tinycc_license = None
 font = None
 unifont_license = None
+trust_anchor = None
 arguments = sys.argv[3:]
 index = 0
 while index < len(arguments):
@@ -67,6 +68,9 @@ while index < len(arguments):
     elif argument == "--unifont-license":
         index += 1
         unifont_license = pathlib.Path(arguments[index])
+    elif argument == "--trust-anchor":
+        index += 1
+        trust_anchor = pathlib.Path(arguments[index])
     else:
         executables.append(pathlib.Path(argument))
     index += 1
@@ -122,6 +126,11 @@ if unifont_license is not None:
     target = root / "usr" / "share" / "licenses" / "unifont"
     target.mkdir(parents=True, exist_ok=True)
     shutil.copy2(unifont_license, target / "COPYING")
+
+if trust_anchor is not None:
+    target = root / "etc" / "ssl" / "certs"
+    target.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(trust_anchor, target / "cklos-test-ca.der")
 
 if license is not None:
     license_target = root / "usr" / "share" / "licenses" / "musl"
