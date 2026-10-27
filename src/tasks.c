@@ -78,7 +78,7 @@ void tasks_init(void) {
 
     strcpy(tasks[0].name, "shell");
     tasks[0].state = TASK_RUNNING;
-    tasks[0].stack_size = 0x90000;
+    tasks[0].stack_size = 0x200000;
     total_tasks = 1;
     add_task("system-idle", idle_entry);
 }
@@ -110,6 +110,7 @@ void task_yield(void) {
     tasks[next].state = TASK_RUNNING;
     current_task = next;
     switch_count++;
+    __asm__ volatile("cli");
     task_switch(&old_task->saved_rsp, tasks[next].saved_rsp);
     __asm__ volatile("sti");
 }

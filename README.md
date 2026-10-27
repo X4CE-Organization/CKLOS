@@ -33,10 +33,12 @@ BIOS -> CKLOS 两阶段引导器 -> x86-64 长模式 -> C 内核 -> CKLOS GUI
 - 系统原生 `cck` C 编译器、TinyCC 后端和 C89 到 C23/GNU 模式选择
 - 带 SHA-256 校验的 RKS2 静态可执行容器和默认 `a.rks` 输出
 - GNU Unifont/WQY Unicode 字体、UTF-8 中文显示和非模态编辑器 `cki`
+- RTL8139 IPv4 TCP/UDP 客户端、DNS A/AAAA、HTTP/1.1 和 BearSSL TLS 1.2
+- `cwgt`/`curl` 下载、重定向、POST、Basic Auth、请求头、Range 与断点续传
 - CMOS 实时时钟、CPU 信息、内存布局和设备诊断
 - 整数计算、十六进制查看、颜色主题和 PC 扬声器测试
 
-这是 CKLOS 0.11.0 的开源 x86-64 图形内核版本。它已经有长模式、分页、任务切换、两级持久化存储、ELF64 用户态隔离、静态 musl libc、系统内 C 编译器、VBE 高分辨率图形、UTF-8 编辑器、RTL8139 网络和可执行文件，但还不是 Linux 那样的完整通用操作系统：完整驱动模型、SSH、USB 和完整桌面尚未实现。
+这是 CKLOS 0.12.0 的开源 x86-64 图形内核版本。它已经有长模式、分页、任务切换、两级持久化存储、ELF64 用户态隔离、静态 musl libc、系统内 C 编译器、VBE 高分辨率图形、UTF-8 编辑器、TCP/IP、DNS、HTTP、TLS 和可执行文件，但还不是 Linux 那样的完整通用操作系统：IPv6 传输、通用公网 CA 包、SSH、USB 和完整桌面尚未完成。
 
 ## 安装依赖
 
@@ -130,6 +132,9 @@ make test
 | `procs` | 显示活动进程数和当前 PID |
 | `cck FILE.c` | 使用 TinyCC 后端编译静态 ELF64，并默认生成 `a.rks` |
 | `cki FILE` | 打开支持中文、鼠标定位、查找、保存和撤销的全屏编辑器 |
+| `dns HOST` | 查询 A 和 AAAA 记录 |
+| `cwgt URL` | 下载 HTTP/HTTPS 内容，支持重定向、POST、请求头和断点续传 |
+| `curl URL` | 支持 GET/HEAD/自定义方法、输出、认证、Cookie、Range 和重定向 |
 | `rks` | 显示 RKS 运行时和已安装程序数量 |
 | `calc 42 '*' 7` | 支持加减乘除、取余、位运算和移位 |
 | `color green` | 切换终端主题 |
@@ -205,6 +210,8 @@ linker.ld               内核链接布局
 
 内核入口位于 `0x00020000`，临时栈顶位于 `0x00090000`。第一级引导器加载第二级引导器；第二级通过 BIOS 读取内核并把内核加载到低端内存。内核随后建立恒等分页、中断表、内核堆、任务调度器和持久化存储，再进入命令循环。
 
-## 后续路线
+## 网络与后续路线
 
-下一阶段是双栈 DNS、TCP 客户端、HTTP、BearSSL TLS、`cwgt` 和 `curl`。SSH 端口仍保持关闭。
+HTTP/1.1、HTTPS、DNS A/AAAA 查询和 IPv4 客户端工具已经可用。当前 HTTPS
+测试使用镜像中的 CKLOS 测试 CA；通用公网访问仍需多证书 CA bundle。IPv6
+仅完成 DNS 查询，IPv6 传输、SSH、HTTP/2/3 和完整代理支持仍在后续批次。

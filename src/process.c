@@ -615,7 +615,7 @@ static interrupt_frame *return_to_kernel(interrupt_frame *frame, int32_t code) {
     frame->rip = (uint64_t)(uintptr_t)process_user_return;
     frame->cs = 0x08;
     frame->ss = 0x10;
-    frame->rsp = 0x90000;
+    frame->rsp = 0x200000;
     frame->rflags = 0x002;
     frame->rax = code < 0 ? (uint64_t)(int64_t)code : (uint64_t)code;
     return frame;

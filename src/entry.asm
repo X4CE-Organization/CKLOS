@@ -7,7 +7,7 @@ extern __bss_end
 
 kernel_entry:
     cli
-    mov rsp, 0x90000
+    mov rsp, 0x200000
     xor rbp, rbp
     cld
     mov rbx, rdi

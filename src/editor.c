@@ -228,7 +228,6 @@ static void draw_editor(editor_state *editor) {
     uint32_t rows = (height - top - 64) / 16;
     uint32_t number_width = 72;
     uint32_t text_width = width - number_width - 24;
-    gui_fill_rect(0, 0, width, height, 0);
     gui_fill_rect(0, 0, width, 30, 3);
     gui_fill_rect(0, 30, width, 30, 8);
     gui_draw_text(12, 7, "CKI  CKLOS UTF-8 Editor", 0, 0xFF);

@@ -6,6 +6,8 @@ IMAGE := $(BUILD)/cklos.img
 DATA_IMAGE := $(BUILD)/cklos-data.img
 FS2_IMAGE := $(BUILD)/cklos-fs2.img
 UNIFONT_IMAGE := $(BUILD)/UNIFONT.BIN
+BEARSSL_LIB := third_party/bearssl/build-cklos/libbearssl.a
+TEST_CA := $(BUILD)/test-ca.der
 USER_HELLO_ELF := $(BUILD)/USERHELLO.ELF
 USER_FORK_ELF := $(BUILD)/USERFORK.ELF
 USER_FAULT_ELF := $(BUILD)/USERFAULT.ELF
@@ -19,7 +21,7 @@ CCK_STAGE := $(BUILD)/cklos-toolchain
 CCK_STAMP := $(BUILD)/tinycc/.cklos-ready
 USER_ELVES := $(USER_HELLO_ELF) $(USER_FORK_ELF) $(USER_FAULT_ELF) \
 	$(USER_EXEC_ELF) $(USER_IO_ELF) $(USER_PIPE_ELF) $(MUSL_ELF)
-KERNEL_MAX_BYTES := 131072
+KERNEL_MAX_BYTES := 262144
 VERSION := $(shell grep 'CKLOS_VERSION "' src/version.h | cut -d '"' -f2)
 
 NASM ?= $(shell command -v nasm 2>/dev/null)
@@ -44,7 +46,7 @@ HOST_SSH_PORT ?= 2222
 NETWORK_ARGS := -netdev user,id=net0,hostfwd=tcp:127.0.0.1:$(HOST_SSH_PORT)-:22 \
 	-device rtl8139,netdev=net0,mac=52:54:00:12:34:56
 
-CFLAGS := --target=x86_64-none-elf -m64 -std=c11 -Os -Wall -Wextra -Werror \
+CFLAGS := --target=x86_64-none-elf -m64 -std=c11 -Oz -Wall -Wextra -Werror \
 	-ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
 	-fno-asynchronous-unwind-tables -fno-unwind-tables -mno-sse -mno-sse2 \
 	-mno-mmx -mno-80387 -mno-red-zone -mcmodel=large -nostdlib -MMD -MP \
@@ -56,7 +58,7 @@ CFLAGS := --target=x86_64-none-elf -m64 -std=c11 -Os -Wall -Wextra -Werror \
 	-DLFS_NO_MALLOC -DLFS_NO_ASSERT -DLFS_NO_DEBUG -DLFS_NO_WARN -DLFS_NO_ERROR
 NASMFLAGS := -f elf64 -Wall -Werror -w-reloc-abs-dword -w-reloc-rel-dword \
 	-w-reloc-abs-qword
-CRYPTO_CFLAGS := --target=x86_64-none-elf -m64 -std=c11 -O2 \
+CRYPTO_CFLAGS := --target=x86_64-none-elf -m64 -std=c11 -Oz \
 	-ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
 	-fno-asynchronous-unwind-tables -fno-unwind-tables -fno-common \
 	-mno-sse -mno-sse2 -mno-mmx -mno-80387 \
@@ -70,7 +72,7 @@ CRYPTO_CFLAGS := --target=x86_64-none-elf -m64 -std=c11 -O2 \
 C_SOURCES := src/kernel.c src/console.c src/serial.c src/keyboard.c \
 	src/string.c src/memory.c src/vfs.c src/disk.c src/interrupts.c \
 	src/network.c src/gui.c src/mouse.c src/rks.c src/fs2.c src/unicode.c \
-	src/editor.c src/tasks.c src/shell.c
+	src/editor.c src/resolver.c src/http.c src/tls.c src/tasks.c src/shell.c
 C_SOURCES := $(C_SOURCES) src/process.c src/rks2.c
 C_OBJECTS := $(patsubst src/%.c,$(BUILD)/%.o,$(C_SOURCES))
 VENDOR_SOURCES := \
@@ -98,12 +100,13 @@ OBJECTS := $(BUILD)/entry.o $(BUILD)/interrupt_stubs.o $(BUILD)/task_switch.o \
 	$(BUILD)/process_asm.o $(C_OBJECTS) $(FS2_OBJECTS) \
 	$(BUILD)/vendor/third_party/bearssl/src/hash/sha2small.o \
 	$(BUILD)/vendor/third_party/bearssl/src/codec/enc32be.o \
-	$(BUILD)/vendor/third_party/bearssl/src/codec/dec32be.o
+	$(BUILD)/vendor/third_party/bearssl/src/codec/dec32be.o \
+	$(BEARSSL_LIB)
 DEPFILES := $(C_OBJECTS:.o=.d)
 
 -include $(DEPFILES)
 
-.PHONY: all image run term test check release clean doctor help crypto font unifont fs2 musl cck keys
+.PHONY: all image run term test check release clean doctor help crypto font unifont fs2 musl cck bearssl keys
 
 all: image
 
@@ -231,6 +234,8 @@ $(CCK_STAMP): scripts/fetch-tinycc.sh scripts/build-cck.sh \
 $(BUILD)/%.o: src/%.c | $(BUILD)
 	$(CLANG) $(CFLAGS) -c $< -o $@
 
+$(BUILD)/keyboard.o $(BUILD)/editor.o: CFLAGS += -O1
+
 crypto:
 	@./scripts/fetch-crypto.sh
 	@./scripts/fetch-littlefs.sh
@@ -255,6 +260,15 @@ musl:
 cck:
 	@./scripts/build-cck.sh
 
+bearssl:
+	@./scripts/build-bearssl.sh
+
+$(BEARSSL_LIB): scripts/build-bearssl.sh scripts/fetch-crypto.sh | $(BUILD)
+	./scripts/build-bearssl.sh
+
+$(TEST_CA): scripts/make-test-cert.sh | $(BUILD)
+	./scripts/make-test-cert.sh
+
 keys: | $(BUILD)
 	@./scripts/gen-ssh-keys.sh
 
@@ -276,13 +290,14 @@ $(BUILD)/kernel.bin: $(BUILD)/kernel.elf
 
 $(BUILD)/fs2-root/.stamp: $(BUILD)/HELLO.RKS $(USER_ELVES) \
 	tools/make-fs2-root.py $(MUSL_STAMP) $(CCK_STAMP) \
-	$(UNIFONT_IMAGE) | $(BUILD)
+	$(UNIFONT_IMAGE) $(TEST_CA) | $(BUILD)
 	python3 tools/make-fs2-root.py $(BUILD)/fs2-root $(BUILD)/HELLO.RKS \
 		$(USER_ELVES) --musl $(MUSL_STAGE) \
 		--toolchain $(CCK_STAGE) --sample programs/cck_hello.c \
 		--sdk include --license third_party/musl/COPYRIGHT \
 		--tinycc-license third_party/tinycc/COPYING \
-		--font $(UNIFONT_IMAGE) --unifont-license third_party/unifont/COPYING
+		--font $(UNIFONT_IMAGE) --unifont-license third_party/unifont/COPYING \
+		--trust-anchor $(TEST_CA)
 	touch $@
 
 $(BUILD)/mkfs2: tools/mkfs2.c third_party/littlefs/lfs.c third_party/littlefs/lfs_util.c | fs2 $(BUILD)

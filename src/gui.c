@@ -4,6 +4,7 @@
 #include "serial.h"
 #include "string.h"
 #include "unicode.h"
+#include "version.h"
 
 #include "font8x8_basic.h"
 
@@ -99,9 +100,37 @@ static void pixel(uint32_t x, uint32_t y, uint8_t color) {
 
 void gui_fill_rect(uint32_t x, uint32_t y, uint32_t width,
                    uint32_t height, uint8_t color) {
+    if (x >= screen_width || y >= screen_height) return;
+    if (x + width > screen_width) width = screen_width - x;
+    if (y + height > screen_height) height = screen_height - y;
     for (uint32_t py = y; py < y + height && py < screen_height; py++) {
-        for (uint32_t px = x; px < x + width && px < screen_width; px++) {
-            pixel(px, py, color);
+        uint8_t *address = framebuffer + py * screen_pitch;
+        if (screen_bpp == 32) {
+            uint32_t value = palette[color & 15];
+            uint32_t *pixels = (uint32_t *)address + x;
+            uint32_t count = width;
+            __asm__ volatile("cld; rep stosl"
+                             : "+D"(pixels), "+c"(count)
+                             : "a"(value)
+                             : "memory");
+        } else if (screen_bpp == 16) {
+            uint32_t rgb = palette[color & 15];
+            uint16_t value = (uint16_t)(((rgb >> 19) & 0x1F) << 11
+                                      | ((rgb >> 10) & 0x3F) << 5
+                                      | ((rgb >> 3) & 0x1F));
+            uint16_t *pixels = (uint16_t *)address + x;
+            uint32_t count = width;
+            __asm__ volatile("cld; rep stosw"
+                             : "+D"(pixels), "+c"(count)
+                             : "a"(value)
+                             : "memory");
+        } else {
+            uint8_t *pixels = address + x;
+            uint32_t count = width;
+            __asm__ volatile("cld; rep stosb"
+                             : "+D"(pixels), "+c"(count)
+                             : "a"(color)
+                             : "memory");
         }
     }
 }
@@ -276,7 +305,8 @@ static void show_panel(void) {
     text_at(panel_x + 12, panel_y + 8,
             active_panel == 1 ? "SYSTEM" : "NETWORK", 0);
     if (active_panel == 1) {
-        text_at(panel_x + 12, panel_y + 32, "CKLOS 0.11 x86-64", 14);
+        text_at(panel_x + 12, panel_y + 32,
+                CKLOS_NAME " " CKLOS_VERSION " x86-64", 14);
         text_at(panel_x + 12, panel_y + 48,
                 linear_framebuffer ? "VBE 1024x768x32" : "VGA 320x200x256", 7);
         text_at(panel_x + 12, panel_y + 64, "MOUSE  PS/2 IRQ12", 11);

@@ -1,6 +1,8 @@
 #include "io.h"
 #include "gui.h"
+#include "interrupts.h"
 #include "keyboard.h"
+#include "mouse.h"
 #include "network.h"
 #include "serial.h"
 #include "tasks.h"
@@ -11,6 +13,8 @@ static bool extended_scancode;
 static volatile uint16_t key_queue[64];
 static volatile uint32_t key_queue_head;
 static volatile uint32_t key_queue_tail;
+static bool editor_polling;
+static bool editor_quiet_mode;
 
 static const char normal_map[59] = {
     0, 0, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b', '\t',
@@ -145,6 +149,15 @@ static uint16_t serial_read_escape(void) {
 
 uint16_t input_getchar(void) {
     while (1) {
+        __asm__ volatile("cli");
+        if (editor_polling) {
+            uint8_t controller_status = inb(0x64);
+            if ((controller_status & 0x01) && !(controller_status & 0x20)) {
+                handle_scancode(inb(0x60));
+            } else if ((controller_status & 0x21) == 0x21) {
+                mouse_poll_controller();
+            }
+        }
         uint16_t character = keyboard_queue_pop();
         if (character) {
             return character;
@@ -165,7 +178,22 @@ uint16_t input_getchar(void) {
         }
         network_poll();
         gui_tick();
-        task_yield();
+        if (editor_polling) {
+            cpu_pause();
+            continue;
+        }
+        if (!editor_quiet_mode) __asm__ volatile("sti");
         cpu_pause();
     }
+}
+
+void input_set_device_polling(bool enabled) {
+    __asm__ volatile("cli");
+    editor_polling = enabled;
+    interrupts_set_device_polling(enabled);
+    if (!enabled) editor_quiet_mode = true;
+}
+
+void input_enable_interrupts(void) {
+    if (!editor_quiet_mode) __asm__ volatile("sti");
 }

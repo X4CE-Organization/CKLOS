@@ -161,3 +161,13 @@ void interrupts_init(void) {
     ticks = 0;
     __asm__ volatile("sti");
 }
+
+void interrupts_set_device_polling(bool polling) {
+    if (polling) {
+        outb(0x21, 0xFF);
+        outb(0xA1, 0xFF);
+    } else {
+        outb(0x21, 0xF8);
+        outb(0xA1, 0xEF);
+    }
+}

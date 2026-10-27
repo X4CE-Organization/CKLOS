@@ -3,6 +3,7 @@
 #include "editor.h"
 #include "fs2.h"
 #include "gui.h"
+#include "http.h"
 #include "interrupts.h"
 #include "io.h"
 #include "keyboard.h"
@@ -12,6 +13,7 @@
 #include "process.h"
 #include "rks2.h"
 #include "rks.h"
+#include "resolver.h"
 #include "shell.h"
 #include "string.h"
 #include "tasks.h"
@@ -142,6 +144,9 @@ static void command_help(void) {
         "  PROCS             Show isolated process count and current PID\n"
         "  CCK ARGS          Run the native TinyCC-based C compiler\n"
         "  CKI FILE          Open the non-modal UTF-8 GUI editor\n"
+        "  CWGT URL          Download HTTP(S) content like wget\n"
+        "  CURL URL          Transfer HTTP(S) content like curl\n"
+        "  DNS HOST          Resolve IPv4/IPv6 DNS records\n"
         "  FSLS / FSCD       Browse the CKLOSFS2 directory tree\n"
         "  FSWRITE / FSCAT   Write or read CKLOSFS2 files\n"
         "  FSFILL FILE BYTES Create a variable-length test file\n"
@@ -209,7 +214,7 @@ static void command_sysinfo(void) {
     console_printf("CPU       %s\n", vendor);
     console_printf("CPUID     max leaf %u\n", eax);
     console_write("Kernel    loaded at 0x00020000\n");
-    console_write("Stack     top at 0x00090000\n");
+    console_write("Stack     top at 0x00200000\n");
     console_printf("BSS       %u bytes\n", (uint32_t)(__bss_end - __bss_start));
     console_printf("RAM       %u KiB detected, 64 MiB identity-mapped\n",
                    physical_memory_bytes() / 1024);
@@ -931,7 +936,10 @@ static void command_cki(int argc) {
         console_write("Usage: CKI FILE\n");
         return;
     }
-    if (!editor_open(arguments[1], true)) {
+    input_set_device_polling(true);
+    bool opened = editor_open(arguments[1], true);
+    input_set_device_polling(false);
+    if (!opened) {
         console_write("CKI: cannot open file.\n");
     }
 }
@@ -990,6 +998,321 @@ static void command_cck(int argc) {
             }
         }
     }
+}
+
+static void remote_name(const char *url, char *output, uint32_t capacity) {
+    const char *cursor = url;
+    while (*cursor && strncmp(cursor, "://", 3) != 0) cursor++;
+    if (*cursor) cursor += 3;
+    const char *name = cursor;
+    while (*cursor) {
+        if (*cursor == '/') name = cursor + 1;
+        cursor++;
+    }
+    uint32_t length = 0;
+    while (name[length] && name[length] != '?' && length + 1 < capacity) {
+        output[length] = name[length];
+        length++;
+    }
+    if (!length) {
+        strcpy(output, "index.html");
+    } else {
+        output[length] = '\0';
+    }
+}
+
+static void append_transfer_text(char *output, uint32_t capacity,
+                                 const char *text) {
+    uint32_t length = (uint32_t)strlen(output);
+    while (*text && length + 1 < capacity) {
+        output[length++] = *text++;
+    }
+    output[length] = '\0';
+}
+
+static void append_request_header(char *headers, uint32_t capacity,
+                                  const char *header) {
+    append_transfer_text(headers, capacity, header);
+    append_transfer_text(headers, capacity, "\r\n");
+}
+
+static bool basic_authorization(const char *credentials, char *output,
+                                uint32_t capacity) {
+    static const char alphabet[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const uint8_t *input = (const uint8_t *)credentials;
+    uint32_t length = (uint32_t)strlen(credentials);
+    uint32_t at = 0;
+    uint32_t written = 0;
+    const char *prefix = "Authorization: Basic ";
+    while (*prefix && written + 1 < capacity) output[written++] = *prefix++;
+    while (at < length) {
+        uint32_t remaining = length - at;
+        uint32_t block = remaining > 3 ? 3 : remaining;
+        uint32_t value = (uint32_t)input[at] << 16;
+        if (block > 1) value |= (uint32_t)input[at + 1] << 8;
+        if (block > 2) value |= input[at + 2];
+        if (written + 4 >= capacity) return false;
+        output[written++] = alphabet[(value >> 18) & 63];
+        output[written++] = alphabet[(value >> 12) & 63];
+        output[written++] = block > 1 ? alphabet[(value >> 6) & 63] : '=';
+        output[written++] = block > 2 ? alphabet[value & 63] : '=';
+        at += block;
+    }
+    output[written] = '\0';
+    return true;
+}
+
+static uint32_t file_size_or_zero(const char *path) {
+    uint32_t size = 0;
+    if (!path || fs2_stat(path, &size, 0) != 0) return 0;
+    return size;
+}
+
+static void command_cwgt(int argc) {
+    const char *url = 0;
+    const char *output = 0;
+    char derived[256];
+    char headers[1024] = "";
+    bool verbose = true;
+    bool resume = false;
+    const char *custom_method = 0;
+    uint32_t timeout_ms = 0;
+    const char *post_data = 0;
+    for (int index = 1; index < argc; index++) {
+        if (strcmp(arguments[index], "-q") == 0) {
+            verbose = false;
+        } else if (strcmp(arguments[index], "-v") == 0) {
+            verbose = true;
+        } else if ((strcmp(arguments[index], "-O") == 0
+                    || strcmp(arguments[index], "-P") == 0)
+                   && index + 1 < argc) {
+            output = arguments[++index];
+        } else if (strcmp(arguments[index], "-c") == 0) {
+            resume = true;
+        } else if (strcmp(arguments[index], "-N") == 0) {
+            continue;
+        } else if (strcmp(arguments[index], "-t") == 0 && index + 1 < argc) {
+            index++;
+        } else if (strcmp(arguments[index], "-T") == 0 && index + 1 < argc) {
+            bool valid;
+            int32_t seconds = parse_int(arguments[++index], &valid);
+            if (valid && seconds > 0) timeout_ms = (uint32_t)seconds * 1000;
+        } else if (strcmp(arguments[index], "-w") == 0 && index + 1 < argc) {
+            index++;
+        } else if (strcmp(arguments[index], "--header") == 0
+                   && index + 1 < argc) {
+            append_request_header(headers, sizeof(headers), arguments[++index]);
+        } else if (strcmp(arguments[index], "--user-agent") == 0
+                   && index + 1 < argc) {
+            append_request_header(headers, sizeof(headers), "User-Agent: ");
+            append_transfer_text(headers, sizeof(headers), arguments[++index]);
+            append_transfer_text(headers, sizeof(headers), "\r\n");
+        } else if ((strcmp(arguments[index], "--post-data") == 0
+                    || strcmp(arguments[index], "--body-data") == 0)
+                   && index + 1 < argc) {
+            post_data = arguments[++index];
+        } else if (strcmp(arguments[index], "--method") == 0 && index + 1 < argc) {
+            custom_method = arguments[++index];
+        } else if (arguments[index][0] != '-') {
+            url = arguments[index];
+        }
+    }
+    if (!url) {
+        console_write("Usage: CWGT [-qvcN] [-O FILE] [--header H] [--post-data D] URL\n");
+        return;
+    }
+    if (!output) {
+        remote_name(url, derived, sizeof(derived));
+        output = derived;
+    }
+    http_options options;
+    memset(&options, 0, sizeof(options));
+    options.url = url;
+    options.output_path = output;
+    options.method = custom_method ? custom_method : post_data ? "POST" : "GET";
+    options.data = post_data;
+    options.headers = headers;
+    options.verbose = verbose;
+    options.follow_redirects = true;
+    options.resume = resume;
+    options.resume_from = resume ? file_size_or_zero(output) : 0;
+    options.connect_timeout_ms = timeout_ms;
+    options.transfer_timeout_ms = timeout_ms;
+    http_result result;
+    if (!http_perform(&options, &result)) {
+        console_printf("cwgt: transfer failed (HTTP %d%s%s)\n", result.status,
+                       result.error[0] ? ", " : "",
+                       result.error[0] ? result.error : "");
+    }
+}
+
+static void command_curl(int argc) {
+    const char *url = 0;
+    const char *output = "stdout";
+    bool to_stdout = true;
+    bool remote_output = false;
+    bool verbose = false;
+    bool quiet = false;
+    bool show_error = false;
+    bool follow_redirects = false;
+    bool include_headers = false;
+    bool fail_http = false;
+    bool resume = false;
+    bool head_only = false;
+    const char *custom_method = 0;
+    const char *data = 0;
+    const char *user_agent = 0;
+    const char *referer = 0;
+    const char *cookie = 0;
+    const char *range = 0;
+    char headers[1024] = "";
+    char authorization[512] = "";
+    char credentials[384] = "";
+    uint32_t connect_timeout_ms = 0;
+    uint32_t transfer_timeout_ms = 0;
+    char derived[256];
+    for (int index = 1; index < argc; index++) {
+        if (strcmp(arguments[index], "-o") == 0 && index + 1 < argc) {
+            output = arguments[++index];
+            to_stdout = false;
+        } else if (strcmp(arguments[index], "-O") == 0) {
+            remote_output = true;
+            to_stdout = false;
+        } else if (strcmp(arguments[index], "-v") == 0) {
+            verbose = true;
+        } else if (strcmp(arguments[index], "-s") == 0) {
+            quiet = true;
+        } else if (strcmp(arguments[index], "-S") == 0) {
+            show_error = true;
+        } else if (strcmp(arguments[index], "-L") == 0) {
+            follow_redirects = true;
+        } else if (strcmp(arguments[index], "-i") == 0) {
+            include_headers = true;
+        } else if (strcmp(arguments[index], "-I") == 0) {
+            head_only = true;
+            include_headers = true;
+        } else if (strcmp(arguments[index], "-f") == 0) {
+            fail_http = true;
+        } else if (strcmp(arguments[index], "-C") == 0 && index + 1 < argc
+                   && strcmp(arguments[index + 1], "-") == 0) {
+            resume = true;
+            index++;
+        } else if (strcmp(arguments[index], "-H") == 0 && index + 1 < argc) {
+            append_request_header(headers, sizeof(headers), arguments[++index]);
+        } else if (strcmp(arguments[index], "-u") == 0 && index + 1 < argc) {
+            strcpy(credentials, arguments[++index]);
+        } else if (strcmp(arguments[index], "-A") == 0 && index + 1 < argc) {
+            user_agent = arguments[++index];
+        } else if (strcmp(arguments[index], "-e") == 0 && index + 1 < argc) {
+            referer = arguments[++index];
+        } else if (strcmp(arguments[index], "-b") == 0 && index + 1 < argc) {
+            cookie = arguments[++index];
+        } else if ((strcmp(arguments[index], "-d") == 0
+                    || strcmp(arguments[index], "--data-binary") == 0)
+                   && index + 1 < argc) {
+            data = arguments[++index];
+        } else if (strcmp(arguments[index], "-X") == 0 && index + 1 < argc) {
+            custom_method = arguments[++index];
+        } else if (strcmp(arguments[index], "--range") == 0 && index + 1 < argc) {
+            range = arguments[++index];
+        } else if (strcmp(arguments[index], "--connect-timeout") == 0
+                   && index + 1 < argc) {
+            bool valid;
+            int32_t seconds = parse_int(arguments[++index], &valid);
+            if (valid && seconds > 0) connect_timeout_ms = (uint32_t)seconds * 1000;
+        } else if (strcmp(arguments[index], "-m") == 0 && index + 1 < argc) {
+            bool valid;
+            int32_t seconds = parse_int(arguments[++index], &valid);
+            if (valid && seconds > 0) transfer_timeout_ms = (uint32_t)seconds * 1000;
+        } else if ((strcmp(arguments[index], "-k") == 0)
+                   || (strcmp(arguments[index], "--compressed") == 0)
+                   || (strcmp(arguments[index], "--retry") == 0)
+                   || (strcmp(arguments[index], "-c") == 0)
+                   || (strcmp(arguments[index], "-x") == 0)) {
+            if ((strcmp(arguments[index], "--retry") == 0
+                 || strcmp(arguments[index], "-c") == 0
+                 || strcmp(arguments[index], "-x") == 0)
+                && index + 1 < argc) {
+                index++;
+            }
+        } else if (strcmp(arguments[index], "--url") == 0 && index + 1 < argc) {
+            url = arguments[++index];
+        } else if (arguments[index][0] != '-') {
+            url = arguments[index];
+        }
+    }
+    if (!url) {
+        console_write("Usage: CURL [-LsvSfi] [-o FILE|-O] [-X METHOD] [-d DATA] URL\n");
+        return;
+    }
+    if (remote_output) {
+        remote_name(url, derived, sizeof(derived));
+        output = derived;
+    }
+    if (!to_stdout && strcmp(output, "stdout") == 0) {
+        remote_name(url, derived, sizeof(derived));
+        output = derived;
+    }
+    if (range) {
+        append_transfer_text(headers, sizeof(headers), "Range: bytes=");
+        append_transfer_text(headers, sizeof(headers), range);
+        append_transfer_text(headers, sizeof(headers), "\r\n");
+    }
+    if (credentials[0]) {
+        basic_authorization(credentials, authorization, sizeof(authorization));
+    }
+    http_options options;
+    memset(&options, 0, sizeof(options));
+    options.url = url;
+    options.output_path = to_stdout ? 0 : output;
+    options.method = custom_method ? custom_method : head_only ? "HEAD"
+                   : data ? "POST" : "GET";
+    options.data = data;
+    options.headers = headers;
+    options.user_agent = user_agent;
+    options.referer = referer;
+    options.authorization = authorization;
+    options.cookie = cookie;
+    options.verbose = verbose;
+    options.follow_redirects = follow_redirects;
+    options.include_headers = include_headers;
+    options.fail_on_http_error = fail_http;
+    options.resume = resume;
+    options.resume_from = resume && !to_stdout ? file_size_or_zero(output) : 0;
+    options.connect_timeout_ms = connect_timeout_ms;
+    options.transfer_timeout_ms = transfer_timeout_ms;
+    http_result result;
+    bool success = http_perform(&options, &result);
+    if (!success && (!quiet || show_error)) {
+        console_printf("curl: (%d) %s\n", result.status,
+                       result.error[0] ? result.error : "transfer failed");
+    }
+}
+
+static void command_dns(int argc) {
+    if (argc != 2) {
+        console_write("Usage: DNS HOST\n");
+        return;
+    }
+    uint32_t ipv4;
+    uint8_t ipv6[16];
+    bool found = false;
+    if (resolver_lookup_ipv4(arguments[1], &ipv4, 4000)) {
+        console_printf("A     %u.%u.%u.%u\n", (ipv4 >> 24) & 255,
+                       (ipv4 >> 16) & 255, (ipv4 >> 8) & 255, ipv4 & 255);
+        found = true;
+    }
+    if (resolver_lookup_ipv6(arguments[1], ipv6, 4000)) {
+        console_write("AAAA  ");
+        for (uint32_t index = 0; index < 16; index += 2) {
+            if (index) console_putc(':');
+            console_printf("%x", (uint32_t)(ipv6[index] << 8 | ipv6[index + 1]));
+        }
+        console_putc('\n');
+        found = true;
+    }
+    if (!found) console_printf("DNS: could not resolve %s\n", arguments[1]);
 }
 
 static void command_rks(void) {
@@ -1417,6 +1740,12 @@ static void run_command(int argc) {
         command_cck(argc);
     } else if (strcmp(arguments[0], "cki") == 0) {
         command_cki(argc);
+    } else if (strcmp(arguments[0], "cwgt") == 0) {
+        command_cwgt(argc);
+    } else if (strcmp(arguments[0], "curl") == 0) {
+        command_curl(argc);
+    } else if (strcmp(arguments[0], "dns") == 0) {
+        command_dns(argc);
     } else if (strcmp(arguments[0], "rks") == 0) {
         command_rks();
     } else if (strcmp(arguments[0], "fsls") == 0) {
@@ -1552,6 +1881,7 @@ static void read_line(void) {
             line[length] = '\0';
             console_putc('\n');
             history_add();
+            input_enable_interrupts();
             return;
         }
         if (key == 3) {
@@ -1560,6 +1890,7 @@ static void read_line(void) {
             }
             line[0] = '\0';
             console_write("^C\n");
+            input_enable_interrupts();
             return;
         }
         if (key == KEY_UP) {

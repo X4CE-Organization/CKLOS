@@ -5,6 +5,7 @@
 
 void mouse_init(void);
 void mouse_irq_handler(void);
+void mouse_poll_controller(void);
 int32_t mouse_x(void);
 int32_t mouse_y(void);
 bool mouse_left_down(void);

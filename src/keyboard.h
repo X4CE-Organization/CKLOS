@@ -16,6 +16,8 @@ enum {
 };
 
 uint16_t input_getchar(void);
+void input_set_device_polling(bool enabled);
+void input_enable_interrupts(void);
 void keyboard_irq_handler(void);
 
 #endif

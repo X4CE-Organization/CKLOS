@@ -30,9 +30,19 @@ uint32_t network_receive_config(void);
 uint8_t network_clock_state(void);
 const uint8_t *network_mac_address(void);
 bool network_tcp_listen(uint16_t port, tcp_event_handler handler);
+bool network_tcp_connect(uint32_t address, uint16_t port,
+                         tcp_event_handler handler, uint32_t timeout_ms);
 bool network_tcp_write(const uint8_t *data, uint32_t length);
 void network_tcp_close(void);
 bool network_tcp_established(void);
+bool network_tcp_client_established(void);
+bool network_tcp_client_write(const uint8_t *data, uint32_t length);
+void network_tcp_client_close(void);
+void network_tcp_client_set_handler(tcp_event_handler handler);
+bool network_udp_send(uint32_t address, uint16_t source_port,
+                      uint16_t destination_port, const uint8_t *data,
+                      uint32_t length);
+void network_udp_set_receiver(uint16_t port, tcp_event_handler handler);
 uint16_t network_tcp_local_port(void);
 uint16_t network_tcp_remote_port(void);
 uint32_t network_tcp_data_segments(void);

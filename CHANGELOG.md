@@ -2,6 +2,29 @@
 
 All notable changes to CKLOS are documented here.
 
+## 0.12.0 — 2026-10-27
+
+### Added
+
+- Outgoing IPv4 TCP clients, IPv4 UDP and DNS A/AAAA resolution.
+- `dns`, `cwgt` and `curl` shell tools with file/stdout output.
+- HTTP/1.1 downloads.
+- BearSSL static TLS 1.2 client, SNI and X.509 test trust anchor.
+- HTTPS downloads through `curl`.
+- HTTP redirects, POST request bodies, Basic authentication, cookies, custom
+  headers, user agents, referrers, ranges, resumable output and transfer timeouts.
+- Deterministic HTTP/HTTPS fixture server covering redirects, POST, auth,
+  ranges and request headers.
+- Automated `cki` interaction test that types, saves and reopens UTF-8 text.
+
+### Known limitations
+
+- IPv6 DNS is present, but IPv6 packet transmission is not complete.
+- Full Mozilla CA bundles and every GNU wget/curl option are not yet supported.
+- `cki` uses post-editor PS/2 polling and leaves PIT interrupts masked until
+  reboot; this avoids a kernel interrupt-return fault that still requires a
+  dedicated scheduler repair.
+
 ## 0.11.0 — 2026-10-27
 
 ### Added

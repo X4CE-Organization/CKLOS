@@ -119,6 +119,28 @@ void mouse_irq_handler(void) {
     }
 }
 
+void mouse_poll_controller(void) {
+    uint8_t status;
+    while (((status = inb(0x64)) & 0x21) == 0x21) {
+        uint8_t value = inb(0x60);
+        packet[packet_index++] = value;
+        if (packet_index != 3) continue;
+        packet_index = 0;
+        if (!(packet[0] & 0x08)) continue;
+        bool left = packet[0] & 1;
+        if (left && !buttons_down) click_pending = true;
+        buttons_down = left;
+        if (!(packet[0] & 0xC0)) {
+            cursor_x += movement(packet[1], packet[0] & 0x10);
+            cursor_y -= movement(packet[2], packet[0] & 0x20);
+            if (cursor_x < 0) cursor_x = 0;
+            if (cursor_x >= screen_width) cursor_x = screen_width - 1;
+            if (cursor_y < 0) cursor_y = 0;
+            if (cursor_y >= screen_height) cursor_y = screen_height - 1;
+        }
+    }
+}
+
 int32_t mouse_x(void) { return cursor_x; }
 int32_t mouse_y(void) { return cursor_y; }
 bool mouse_left_down(void) { return buttons_down; }

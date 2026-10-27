@@ -8,8 +8,8 @@ This file is the source of truth for the batched native-toolchain implementation
 | ELF64, ring 3, syscalls, libc | 0.9.0 | complete and tested |
 | TinyCC and cck | 0.10.0 | complete and tested |
 | VBE, Unicode and cki | 0.11.0 | complete and tested |
-| IPv4/IPv6, cwgt and curl | 0.12.0 | next |
-| Clang/GCC C++ evaluation | 0.13.0 | pending |
+| IPv4/IPv6, cwgt and curl | 0.12.0 | IPv4 clients/tools complete; IPv6 transport pending |
+| Clang/GCC C++ evaluation | 0.13.0 | next |
 
 Rules:
 
@@ -116,3 +116,33 @@ Known limitation:
 
 - `cki` currently runs as a protected kernel GUI service rather than a ring-3
   client of a future compositor/windowing protocol.
+
+## 0.12.0 checkpoint
+
+Completed:
+
+- Outgoing IPv4 TCP clients alongside the existing TCP listener.
+- IPv4 UDP and DNS A/AAAA parsing.
+- `DNS HOST` command.
+- Public-IP parser, `/etc/hosts` lookup and QEMU DNS resolution.
+- `CWGT` and `CURL` commands with stdout/file output.
+- HTTP/1.1 GET/POST, redirects, ranges, Basic Auth, cookies and custom headers.
+- Pinned, freestanding BearSSL client library and HTTPS GET.
+- SNI and X.509 verification against an installed test trust anchor.
+- Automated UTF-8 `cki` interaction, not only direct filesystem writes.
+
+Verification:
+
+- Local HTTP server download into CKLOSFS2.
+- Local HTTPS server download through BearSSL.
+- Public DNS A and AAAA response parsing.
+- Downloaded files are listed after reboot.
+
+Remaining network work:
+
+- IPv6 packet transmission and IPv6 TCP HTTP/HTTPS.
+- Full Mozilla CA bundle trust-store ingestion.
+- Full GNU `cwgt`/`curl` option compatibility, persistent cookie jars,
+  multipart upload, proxies and compressed responses.
+- A dedicated kernel interrupt-return repair so editor polling can return to
+  timer-driven scheduling after close.

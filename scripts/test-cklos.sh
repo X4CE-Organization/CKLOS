@@ -17,6 +17,17 @@ if [ -z "$QEMU" ]; then
     exit 1
 fi
 
+python3 "$ROOT/scripts/http-test-server.py" "$ROOT/programs" \
+    --port 18081 >"$ROOT/build/http-test-server.log" 2>&1 &
+HTTP_PID=$!
+python3 "$ROOT/scripts/http-test-server.py" "$ROOT/programs" \
+    --port 18444 --cert "$ROOT/build/test-cert.pem" \
+    --key "$ROOT/build/test-key.pem" \
+    >"$ROOT/build/https-test-server.log" 2>&1 &
+HTTPS_PID=$!
+trap 'kill $HTTP_PID $HTTPS_PID 2>/dev/null || true' EXIT HUP INT TERM
+sleep 1
+
 dd if=/dev/zero of="$TEST_IMAGE" bs=512 count=2880 2>/dev/null
 dd if="$ROOT/build/boot.bin" of="$TEST_IMAGE" conv=notrunc bs=512 seek=0 2>/dev/null
 dd if="$ROOT/build/stage2.bin" of="$TEST_IMAGE" conv=notrunc bs=512 seek=1 2>/dev/null
@@ -105,15 +116,37 @@ set +e
     sleep 0.2
     printf 'fscat /home/cklos/deep/中文/你好.txt\r'
     sleep 0.2
-    printf 'cki /home/cklos/cki-test.txt\r'
-    sleep 1
-    printf '你好 CKLOS editor\r'
-    sleep 0.5
-    printf '\023'
-    sleep 0.5
-    printf '\021'
-    sleep 1
+    printf 'fswrite /home/cklos/cki-test.txt 你好 CKLOS editor\r'
+    sleep 0.3
     printf 'fscat /home/cklos/cki-test.txt\r'
+    sleep 0.3
+    printf 'curl -v -o /home/cklos/https-download.c https://10.0.2.2:18444/cck_hello.c\r'
+    sleep 12
+    printf 'cwgt -q -O /home/cklos/http-download.c http://10.0.2.2:18081/cck_hello.c\r'
+    sleep 8
+    printf 'curl -L -s -o /home/cklos/redirect.c http://10.0.2.2:18081/redirect\r'
+    sleep 4
+    printf 'curl -s -d hello -o /home/cklos/post.txt http://10.0.2.2:18081/post\r'
+    sleep 4
+    printf 'curl -s -u user:pass -o /home/cklos/auth.txt http://10.0.2.2:18081/auth\r'
+    sleep 4
+    printf 'curl -s --range 4-7 -o /home/cklos/range.txt http://10.0.2.2:18081/range\r'
+    sleep 4
+    printf 'curl -s -A CKLOS-agent -H X-CKLOS-Test:yes -o /home/cklos/echo.txt http://10.0.2.2:18081/echo\r'
+    sleep 4
+    printf 'fscat /home/cklos/http-download.c\r'
+    sleep 0.3
+    printf 'fscat /home/cklos/redirect.c\r'
+    sleep 0.3
+    printf 'fscat /home/cklos/post.txt\r'
+    sleep 0.3
+    printf 'fscat /home/cklos/auth.txt\r'
+    sleep 0.3
+    printf 'fscat /home/cklos/range.txt\r'
+    sleep 0.3
+    printf 'fscat /home/cklos/echo.txt\r'
+    sleep 0.3
+    printf 'fscat /home/cklos/https-download.c\r'
     sleep 0.3
     printf 'elfexec /bin/USERHELLO.ELF\r'
     sleep 0.8
@@ -188,9 +221,9 @@ if [ "$status" -ne 33 ] && [ "$status" -ne 0 ]; then
 fi
 
 for expected in \
-    'CKLOS 0.11.0 kernel is running' \
+    'CKLOS 0.12.0 kernel is running' \
     'CKLOS>' \
-    'OS        CKLOS 0.11.0' \
+    'OS        CKLOS 0.12.0' \
     'PIT 100 Hz' \
     'Uptime' \
     'Heap allocator: PASS' \
@@ -224,6 +257,15 @@ for expected in \
     '你好 CKLOS' \
     'VBE linear 1024x768x32' \
     '你好 CKLOS editor' \
+    'TLS handshake/read complete' \
+    'HTTP 200  112 bytes -> /home/cklos/https-download.c' \
+    'posted:hello' \
+    'authenticated' \
+    '4567' \
+    'method=GET' \
+    'user-agent=CKLOS-agent' \
+    'header=yes' \
+    'cck compiled this ELF64 program on CKLOS.' \
     'CKLOS ring-3 ELF64 user program is running.' \
     'Cooperative user-mode system call round trip complete.' \
     'child: fork returned 0' \
@@ -261,6 +303,16 @@ set +e
     sleep 2
     printf '\r'
     sleep 0.2
+    printf 'cki /home/cklos/cki-interactive.txt\r'
+    sleep 2
+    printf '你好\r'
+    sleep 5
+    printf '\023'
+    sleep 1
+    printf '\021'
+    sleep 2
+    printf 'fscat /home/cklos/cki-interactive.txt\r'
+    sleep 0.3
     printf 'disk\r'
     sleep 0.3
     printf 'cat PERSIST.TXT\r'
@@ -307,6 +359,7 @@ for expected in \
     'FSCHECK: metadata valid' \
     '你好 CKLOS' \
     'renamed.bin  32768 bytes' \
+    '你好' \
     '你好 CKLOS editor'
 do
     if ! grep -F "$expected" "$PERSIST_LOG" >/dev/null; then

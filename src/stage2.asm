@@ -1,7 +1,7 @@
 bits 16
 org 0x10000
 
-KERNEL_SECTORS equ 256
+KERNEL_SECTORS equ 512
 KERNEL_SEGMENT equ 0x2000
 
 stage2_start:
@@ -55,9 +55,6 @@ stage2_start:
     inc word [current_lba]
     dec word [sectors_left]
     jnz .load
-
-    mov al, 'K'
-    call serial_char
 
     ; Collect the firmware memory map before leaving real mode.  BIOS writes
     ; the entries through ES:DI, while DS remains the stage-2 data segment.
@@ -334,7 +331,7 @@ long_mode:
     mov fs, ax
     mov gs, ax
     mov ss, ax
-    mov rsp, 0x90000
+    mov rsp, 0x200000
     xor rbp, rbp
     mov edi, 0x0500
     mov rax, 0x20000

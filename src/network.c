@@ -34,6 +34,7 @@
 #define ETHERTYPE_ARP 0x0806
 #define IP_PROTOCOL_ICMP 1
 #define IP_PROTOCOL_TCP 6
+#define IP_PROTOCOL_UDP 17
 
 #define ARP_CACHE_SIZE 8
 #define TCP_RX_WINDOW 4096
@@ -48,6 +49,7 @@
 typedef enum {
     TCP_STATE_CLOSED,
     TCP_STATE_LISTEN,
+    TCP_STATE_SYN_SENT,
     TCP_STATE_SYN_RECEIVED,
     TCP_STATE_ESTABLISHED,
     TCP_STATE_CLOSE_WAIT
@@ -95,6 +97,17 @@ static uint32_t tcp_write_failures;
 static uint32_t tcp_last_write_state;
 static uint32_t tcp_segment_failure;
 static uint32_t ipv4_send_failure;
+static tcp_state client_state;
+static tcp_event_handler client_handler;
+static uint16_t client_local_port;
+static uint16_t client_port_sequence;
+static uint16_t client_remote_port;
+static uint32_t client_remote_ip;
+static uint8_t client_remote_mac[6];
+static uint32_t client_send_next;
+static uint32_t client_receive_next;
+static uint16_t udp_receive_port;
+static tcp_event_handler udp_handler;
 
 static uint16_t read_be16(const uint8_t *data) {
     return (uint16_t)((uint16_t)data[0] << 8 | data[1]);
@@ -334,6 +347,36 @@ static bool send_ipv4(const uint8_t *destination_mac, uint32_t destination_ip,
     return true;
 }
 
+static bool send_udp(uint32_t destination_ip, uint16_t source_port,
+                     uint16_t destination_port, const uint8_t *data,
+                     uint32_t length) {
+    if (length > 1400) return false;
+    uint8_t mac[6];
+    if (!network_arp_resolve(destination_ip, mac, 1000)) return false;
+    uint8_t udp[1408];
+    write_be16(udp + 0, source_port);
+    write_be16(udp + 2, destination_port);
+    write_be16(udp + 4, (uint16_t)(length + 8));
+    write_be16(udp + 6, 0);
+    memcpy(udp + 8, data, length);
+    return send_ipv4(mac, destination_ip, IP_PROTOCOL_UDP, udp, length + 8);
+}
+
+static void handle_udp(const uint8_t *packet, uint32_t length) {
+    const uint8_t *ip = packet + ETH_HEADER_SIZE;
+    uint32_t ip_header_length = (uint32_t)(ip[0] & 0x0F) * 4;
+    if (length < ETH_HEADER_SIZE + ip_header_length + 8) return;
+    const uint8_t *udp = ip + ip_header_length;
+    uint16_t destination_port = read_be16(udp + 2);
+    uint16_t udp_length = read_be16(udp + 4);
+    if (udp_length < 8 || ip_header_length + udp_length > read_be16(ip + 2)) {
+        return;
+    }
+    if (udp_receive_port && destination_port == udp_receive_port && udp_handler) {
+        udp_handler(TCP_EVENT_DATA, udp + 8, udp_length - 8);
+    }
+}
+
 static void handle_icmp(const uint8_t *packet, uint32_t length,
                         uint32_t source_ip, const uint8_t *source_mac) {
     if (length < IPV4_HEADER_SIZE + ICMP_HEADER_SIZE) {
@@ -439,6 +482,92 @@ static uint32_t tcp_initial_sequence(void) {
     return low ^ (high * 0x9E3779B9U) ^ timer_ticks() ^ 0x434B4C53U;
 }
 
+static bool client_send_segment(uint8_t flags, const uint8_t *payload,
+                                uint32_t length) {
+    if (client_state == TCP_STATE_CLOSED || length > TCP_SEND_CHUNK) return false;
+    uint8_t segment[TCP_SEND_CHUNK + 20];
+    memset(segment, 0, 20);
+    write_be16(segment + 0, client_local_port);
+    write_be16(segment + 2, client_remote_port);
+    write_be32(segment + 4, client_send_next);
+    write_be32(segment + 8, client_receive_next);
+    segment[12] = 5 << 4;
+    segment[13] = flags;
+    write_be16(segment + 14, TCP_RX_WINDOW);
+    if (length) memcpy(segment + 20, payload, length);
+    write_be16(segment + 16,
+               tcp_checksum(local_ip, client_remote_ip, segment, 20 + length));
+    bool sent = send_ipv4(client_remote_mac, client_remote_ip, IP_PROTOCOL_TCP,
+                          segment, 20 + length);
+    if (sent) {
+        if (flags & (TCP_SYN | TCP_FIN)) client_send_next++;
+        else client_send_next += length;
+    }
+    return sent;
+}
+
+static void client_reset(void) {
+    client_state = TCP_STATE_CLOSED;
+    client_remote_port = 0;
+    client_remote_ip = 0;
+    client_send_next = 0;
+    client_receive_next = 0;
+}
+
+static bool handle_client_tcp(const uint8_t *packet, uint32_t length,
+                              uint32_t source_ip) {
+    if (client_state == TCP_STATE_CLOSED) return false;
+    const uint8_t *ip = packet + ETH_HEADER_SIZE;
+    uint32_t ip_header_length = (uint32_t)(ip[0] & 0x0F) * 4;
+    if (length < ETH_HEADER_SIZE + ip_header_length + 20) return false;
+    const uint8_t *tcp = ip + ip_header_length;
+    uint16_t source_port = read_be16(tcp);
+    uint16_t destination_port = read_be16(tcp + 2);
+    if (source_ip != client_remote_ip || source_port != client_remote_port
+        || destination_port != client_local_port) {
+        return false;
+    }
+    uint32_t tcp_header_length = (uint32_t)(tcp[12] >> 4) * 4;
+    if (tcp_header_length < 20
+        || ip_header_length + tcp_header_length > read_be16(ip + 2)) {
+        return true;
+    }
+    uint32_t sequence = read_be32(tcp + 4);
+    uint32_t acknowledgement = read_be32(tcp + 8);
+    uint8_t flags = tcp[13];
+    uint32_t payload_length = read_be16(ip + 2) - ip_header_length - tcp_header_length;
+    const uint8_t *payload = tcp + tcp_header_length;
+    if (flags & TCP_RST) {
+        client_reset();
+        if (client_handler) client_handler(TCP_EVENT_DISCONNECTED, 0, 0);
+        return true;
+    }
+    if (client_state == TCP_STATE_SYN_SENT) {
+        if ((flags & (TCP_SYN | TCP_ACK)) == (TCP_SYN | TCP_ACK)
+            && acknowledgement == client_send_next) {
+            client_receive_next = sequence + 1;
+            client_state = TCP_STATE_ESTABLISHED;
+            client_send_segment(TCP_ACK, 0, 0);
+            if (client_handler) client_handler(TCP_EVENT_CONNECTED, 0, 0);
+        }
+        return true;
+    }
+    if (payload_length && sequence == client_receive_next) {
+        client_receive_next += payload_length;
+        client_send_segment(TCP_ACK, 0, 0);
+        if (client_handler) client_handler(TCP_EVENT_DATA, payload, payload_length);
+    } else if (payload_length) {
+        client_send_segment(TCP_ACK, 0, 0);
+    }
+    if (flags & TCP_FIN) {
+        client_receive_next = sequence + payload_length + 1;
+        client_send_segment(TCP_FIN | TCP_ACK, 0, 0);
+        client_reset();
+        if (client_handler) client_handler(TCP_EVENT_DISCONNECTED, 0, 0);
+    }
+    return true;
+}
+
 static void handle_tcp(const uint8_t *packet, uint32_t length,
                        uint32_t source_ip, const uint8_t *source_mac) {
     const uint8_t *ip = packet + ETH_HEADER_SIZE;
@@ -460,6 +589,10 @@ static void handle_tcp(const uint8_t *packet, uint32_t length,
     uint8_t flags = tcp[13];
     uint32_t payload_length = ip_total_length - ip_header_length - tcp_header_length;
     const uint8_t *payload = tcp + tcp_header_length;
+
+    if (handle_client_tcp(packet, length, source_ip)) {
+        return;
+    }
 
     if (connection_state == TCP_STATE_LISTEN) {
         if (destination_port != listen_port || !(flags & TCP_SYN) || flags & TCP_ACK) {
@@ -561,6 +694,8 @@ static void handle_ipv4(const uint8_t *packet, uint32_t length) {
         handle_icmp(packet, length, source_ip, source_mac);
     } else if (ip[9] == IP_PROTOCOL_TCP) {
         handle_tcp(packet, length, source_ip, source_mac);
+    } else if (ip[9] == IP_PROTOCOL_UDP) {
+        handle_udp(packet, length);
     }
 }
 
@@ -640,6 +775,12 @@ void network_init(void) {
     tcp_last_write_state = 0;
     tcp_segment_failure = 0;
     ipv4_send_failure = 0;
+    client_handler = 0;
+    client_local_port = 0;
+    client_port_sequence = (uint16_t)(timer_ticks() & 0x3FFF);
+    udp_receive_port = 0;
+    udp_handler = 0;
+    client_reset();
     tcp_reset_connection(TCP_STATE_CLOSED);
 
     if (!find_rtl8139()) {
@@ -803,6 +944,79 @@ void network_tcp_close(void) {
 
 bool network_tcp_established(void) {
     return connection_state == TCP_STATE_ESTABLISHED;
+}
+
+bool network_tcp_connect(uint32_t address, uint16_t port,
+                         tcp_event_handler handler, uint32_t timeout_ms) {
+    if (!available || !address || !port) return false;
+    client_reset();
+    client_handler = handler;
+    client_remote_ip = address;
+    client_remote_port = port;
+    client_local_port = (uint16_t)(49152
+                                 + (client_port_sequence++ & 0x3FFF));
+    if (!network_arp_resolve(address, client_remote_mac, timeout_ms)) {
+        client_reset();
+        return false;
+    }
+    client_send_next = tcp_initial_sequence();
+    client_receive_next = 0;
+    client_state = TCP_STATE_SYN_SENT;
+    if (!client_send_segment(TCP_SYN, 0, 0)) {
+        client_reset();
+        return false;
+    }
+    uint32_t target = timer_ticks() + timeout_ms / 10;
+    while ((int32_t)(timer_ticks() - target) < 0) {
+        network_poll();
+        if (client_state == TCP_STATE_ESTABLISHED) return true;
+        if (client_state == TCP_STATE_CLOSED) return false;
+        cpu_pause();
+    }
+    client_reset();
+    return false;
+}
+
+bool network_tcp_client_write(const uint8_t *data, uint32_t length) {
+    if (client_state != TCP_STATE_ESTABLISHED) return false;
+    uint32_t sent = 0;
+    while (sent < length) {
+        uint32_t chunk = length - sent;
+        if (chunk > TCP_SEND_CHUNK) chunk = TCP_SEND_CHUNK;
+        if (!client_send_segment(TCP_ACK | TCP_PSH, data + sent, chunk)) {
+            return false;
+        }
+        sent += chunk;
+    }
+    return true;
+}
+
+void network_tcp_client_close(void) {
+    if (client_state == TCP_STATE_ESTABLISHED) {
+        client_send_segment(TCP_FIN | TCP_ACK, 0, 0);
+    }
+    client_reset();
+}
+
+bool network_tcp_client_established(void) {
+    return client_state == TCP_STATE_ESTABLISHED;
+}
+
+void network_tcp_client_set_handler(tcp_event_handler handler) {
+    client_handler = handler;
+}
+
+bool network_udp_send(uint32_t address, uint16_t source_port,
+                      uint16_t destination_port, const uint8_t *data,
+                      uint32_t length) {
+    (void)source_port;
+    return available && send_udp(address, source_port, destination_port,
+                                 data, length);
+}
+
+void network_udp_set_receiver(uint16_t port, tcp_event_handler handler) {
+    udp_receive_port = port;
+    udp_handler = handler;
 }
 
 uint16_t network_tcp_local_port(void) {
