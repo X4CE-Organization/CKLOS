@@ -38,7 +38,7 @@ BIOS -> CKLOS 两阶段引导器 -> x86-64 长模式 -> C 内核 -> CKLOS GUI
 - CMOS 实时时钟、CPU 信息、内存布局和设备诊断
 - 整数计算、十六进制查看、颜色主题和 PC 扬声器测试
 
-这是 CKLOS 0.12.0 的开源 x86-64 图形内核版本。它已经有长模式、分页、任务切换、两级持久化存储、ELF64 用户态隔离、静态 musl libc、系统内 C 编译器、VBE 高分辨率图形、UTF-8 编辑器、TCP/IP、DNS、HTTP、TLS 和可执行文件，但还不是 Linux 那样的完整通用操作系统：IPv6 传输、通用公网 CA 包、SSH、USB 和完整桌面尚未完成。
+这是 CKLOS 0.13.0 的开源 x86-64 图形内核版本。它已经有长模式、分页、任务切换、两级持久化存储、ELF64 用户态隔离、静态 musl libc、系统内 C 编译器、VBE 高分辨率图形、UTF-8 编辑器、TCP/IP、DNS、HTTP、TLS 和可执行文件。0.13.0 同时提供 Clang/LLVM 与 GCC 的 C++ 前端独立评估，但尚未提供 C++ 编译器。系统还不是 Linux 那样的完整通用操作系统：IPv6 传输、通用公网 CA 包、SSH、USB 和完整桌面尚未完成。
 
 ## 安装依赖
 
@@ -158,6 +158,11 @@ RKS executable is running!
 示例源码位于 `programs/hello.c`，ABI 在 `programs/rks_api.h`。`RKS1` 是兼容的旧式 ring-0 程序格式，只用于现有演示。新的隔离程序使用 `ELFEXEC`，运行在 ring 3；示例包括 `USERHELLO.ELF`、`USERFORK.ELF`、`USERFAULT.ELF`、`USEREXEC.ELF`、`USERIO.ELF`、`USERPIPE.ELF` 和链接 musl 的 `MUSLHELLO.ELF`。
 
 `cck` 使用固定提交的 TinyCC 作为 C 后端。它接受 C89/C90、C99、C11、C17、C23 和对应 GNU 模式，并明确拒绝不存在的 `-std=c98`。`-o app.elf` 生成静态 ELF64；`-o app.rks` 或无 `-o` 生成经 BearSSL SHA-256 校验的 RKS2。C++ 不由 `cck` 处理，具体限制见 [docs/CCK.md](docs/CCK.md)。
+
+C++ 前端只完成了独立评估：`make cxx-eval` 会实际编译一个 Clang/LLVM
+freestanding C++23 目标文件；GCC 与标准库移植的依赖、许可证、风险和
+工作量见 [docs/CXX_FRONTENDS.md](docs/CXX_FRONTENDS.md)。这不等于 CKLOS
+已经拥有 `g++` 或 C++ 运行时。
 
 `cki` 使用 VBE 线性帧缓冲和 GNU Unifont/WQY 中文点阵字体。`Ctrl+S` 保存，`Ctrl+O` 打开，`Ctrl+F` 查找，`Ctrl+Z` 撤销，`Ctrl+Q` 退出；鼠标点击可定位光标。
 

@@ -106,7 +106,7 @@ DEPFILES := $(C_OBJECTS:.o=.d)
 
 -include $(DEPFILES)
 
-.PHONY: all image run term test check release clean doctor help crypto font unifont fs2 musl cck bearssl keys
+.PHONY: all image run term test check release clean doctor help crypto font unifont fs2 musl cck bearssl cxx-eval keys
 
 all: image
 
@@ -262,6 +262,9 @@ cck:
 
 bearssl:
 	@./scripts/build-bearssl.sh
+
+cxx-eval:
+	@./scripts/evaluate-cxx-frontends.sh
 
 $(BEARSSL_LIB): scripts/build-bearssl.sh scripts/fetch-crypto.sh | $(BUILD)
 	./scripts/build-bearssl.sh

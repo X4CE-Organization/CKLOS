@@ -219,7 +219,7 @@ static bool build_request(const http_options *options, bool tls,
     append_text(request, capacity, &length, "\r\nUser-Agent: ");
     append_text(request, capacity, &length,
                 options->user_agent && *options->user_agent
-                    ? options->user_agent : "CKLOS-curl/0.12");
+                    ? options->user_agent : "CKLOS-curl/0.13");
     append_text(request, capacity, &length,
                 "\r\nAccept: */*\r\nConnection: close\r\n");
     if (options->referer && *options->referer) {

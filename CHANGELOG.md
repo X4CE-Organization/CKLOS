@@ -2,6 +2,19 @@
 
 All notable changes to CKLOS are documented here.
 
+## 0.13.0 — 2026-10-27
+
+### Added
+
+- `make cxx-eval`: an executable Clang/LLVM freestanding C++23 frontend probe.
+- Separate Clang/LLVM and GCC C++ runtime-porting reports, dependency lists,
+  risk analysis and engineering estimates.
+
+### Scope
+
+- This batch evaluates C++ frontends only. CKLOS still has no C++ compiler or
+  C++ standard library, and `cck` remains strictly a C compiler.
+
 ## 0.12.0 — 2026-10-27
 
 ### Added

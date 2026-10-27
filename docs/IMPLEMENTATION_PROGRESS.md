@@ -9,7 +9,7 @@ This file is the source of truth for the batched native-toolchain implementation
 | TinyCC and cck | 0.10.0 | complete and tested |
 | VBE, Unicode and cki | 0.11.0 | complete and tested |
 | IPv4/IPv6, cwgt and curl | 0.12.0 | IPv4 clients/tools complete; IPv6 transport pending |
-| Clang/GCC C++ evaluation | 0.13.0 | next |
+| Clang/GCC C++ evaluation | 0.13.0 | complete: probe and reports, no C++ compiler |
 
 Rules:
 
@@ -146,3 +146,17 @@ Remaining network work:
   multipart upload, proxies and compressed responses.
 - A dedicated kernel interrupt-return repair so editor polling can return to
   timer-driven scheduling after close.
+
+## 0.13.0 checkpoint
+
+Completed:
+
+- Executable Clang/LLVM C++23 freestanding frontend probe.
+- Separate Clang and GCC impact, dependency, licensing and schedule reports.
+- Explicit statement that `cck` is C-only and that C++98 was not silently
+  accepted as C.
+
+Not delivered:
+
+- No C++ compiler, libc++, libstdc++, exception runtime or C++ ABI is claimed
+  as part of this checkpoint.
