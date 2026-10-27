@@ -23,6 +23,12 @@ Supported protocol pieces:
 - `hmac-sha2-256` packet authentication
 - session channels, PTY requests, shell requests and one-shot exec requests
 - channel data/EOF/close/status handling
+- SFTP v3 upload, download, listing, metadata, rename and directory operations
+- peer-window accounting and local WINDOW_ADJUST flow control
+
+Agent-forwarding requests are acknowledged, and DIRECT-TCPIP channel
+negotiation is present. Guest-side Agent sockets and working forwarded target
+connections are not complete yet; remote `tcpip-forward` is also pending.
 
 Cryptography is provided by pinned Monocypher and BearSSL implementations.
 The server currently accepts one session at a time and does not implement

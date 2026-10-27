@@ -357,6 +357,39 @@ int fs2_write(const char *path, const void *data, uint32_t size, bool append) {
     return count == (lfs_ssize_t)size && result == LFS_ERR_OK ? 0 : -2;
 }
 
+int fs2_write_at(const char *path, uint32_t offset, const void *data,
+                 uint32_t size) {
+    char resolved[FS2_PATH_MAX];
+    path_normalize(path, resolved);
+    struct lfs_file_config file_config = {.buffer = file_cache};
+    struct lfs_file file;
+    if (lfs_file_opencfg(&filesystem, &file, resolved,
+                        LFS_O_WRONLY | LFS_O_CREAT, &file_config) != LFS_ERR_OK) {
+        return -1;
+    }
+    if (lfs_file_seek(&filesystem, &file, offset, LFS_SEEK_SET) < 0) {
+        lfs_file_close(&filesystem, &file);
+        return -1;
+    }
+    lfs_ssize_t count = lfs_file_write(&filesystem, &file, data, size);
+    int result = lfs_file_close(&filesystem, &file);
+    return count == (lfs_ssize_t)size && result == LFS_ERR_OK ? 0 : -2;
+}
+
+int fs2_truncate(const char *path, uint32_t size) {
+    char resolved[FS2_PATH_MAX];
+    path_normalize(path, resolved);
+    struct lfs_file_config file_config = {.buffer = file_cache};
+    struct lfs_file file;
+    if (lfs_file_opencfg(&filesystem, &file, resolved,
+                        LFS_O_WRONLY | LFS_O_CREAT, &file_config) != LFS_ERR_OK) {
+        return -1;
+    }
+    int result = lfs_file_truncate(&filesystem, &file, size);
+    int close_result = lfs_file_close(&filesystem, &file);
+    return result == LFS_ERR_OK && close_result == LFS_ERR_OK ? 0 : -2;
+}
+
 int fs2_mkdir(const char *path) {
     char resolved[FS2_PATH_MAX];
     path_normalize(path, resolved);

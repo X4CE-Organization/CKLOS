@@ -2,6 +2,24 @@
 
 All notable changes to CKLOS are documented here.
 
+## 0.15.0 — 2026-10-27
+
+### Added
+
+- SFTP v3 over SSH with INIT/VERSION, OPEN, READ, WRITE, STAT/LSTAT/FSTAT,
+  OPENDIR/READDIR, REMOVE, MKDIR, RMDIR, RENAME and handle management.
+- Bidirectional SSH channel window accounting, WINDOW_ADJUST generation and
+  packet sends limited by the peer's remaining window.
+- `auth-agent-req@openssh.com` acceptance and DIRECT-TCPIP channel negotiation.
+
+### Known limitations
+
+- TCP forwarding negotiation exists but connecting a forwarded channel to an
+  outbound target still fails validation.
+- Agent forwarding control negotiation exists, but no guest Unix-domain agent
+  socket proxy is available.
+- Remote forwarding (`tcpip-forward`) is not implemented.
+
 ## 0.14.0 — 2026-10-27
 
 ### Added

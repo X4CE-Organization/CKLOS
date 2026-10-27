@@ -38,7 +38,7 @@ BIOS -> CKLOS 两阶段引导器 -> x86-64 长模式 -> C 内核 -> CKLOS GUI
 - CMOS 实时时钟、CPU 信息、内存布局和设备诊断
 - 整数计算、十六进制查看、颜色主题和 PC 扬声器测试
 
-这是 CKLOS 0.14.0 的开源 x86-64 图形内核版本。它已经有长模式、分页、任务切换、两级持久化存储、ELF64 用户态隔离、静态 musl libc、系统内 C 编译器、VBE 高分辨率图形、UTF-8 编辑器、IPv4/IPv6 TCP、DNS、HTTP、TLS、SSH 和可执行文件。0.13.0 同时提供 Clang/LLVM 与 GCC 的 C++ 前端独立评估，但尚未提供 C++ 编译器。系统还不是 Linux 那样的完整通用操作系统：USB、完整桌面和更完整的 curl/wget 兼容性尚未完成。
+这是 CKLOS 0.15.0 的开源 x86-64 图形内核版本。它已经有长模式、分页、任务切换、两级持久化存储、ELF64 用户态隔离、静态 musl libc、系统内 C 编译器、VBE 高分辨率图形、UTF-8 编辑器、IPv4/IPv6 TCP、DNS、HTTP、TLS、SSH/SFTP 和可执行文件。0.13.0 同时提供 Clang/LLVM 与 GCC 的 C++ 前端独立评估，但尚未提供 C++ 编译器。系统还不是 Linux 那样的完整通用操作系统：USB、完整桌面、完整 SSH 转发和更完整的 curl/wget 兼容性尚未完成。
 
 ## 安装依赖
 

@@ -197,6 +197,7 @@ uint16_t input_getchar(void) {
             return character;
         }
         network_poll();
+        ssh_poll();
         gui_tick();
         if (editor_polling) {
             cpu_pause();

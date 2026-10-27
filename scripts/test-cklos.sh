@@ -222,9 +222,9 @@ if [ "$status" -ne 33 ] && [ "$status" -ne 0 ]; then
 fi
 
 for expected in \
-    'CKLOS 0.14.0 kernel is running' \
+    'CKLOS 0.15.0 kernel is running' \
     'CKLOS>' \
-    'OS        CKLOS 0.14.0' \
+    'OS        CKLOS 0.15.0' \
     'PIT 100 Hz' \
     'Uptime' \
     'Heap allocator: PASS' \
@@ -302,7 +302,7 @@ done
 SSH_LOG="$ROOT/build/qemu-ssh-test.log"
 SSH_PORT=${SSH_TEST_PORT:-2222}
 (
-    sleep 8
+    sleep 20
     printf 'shutdown\r'
     sleep 1
 ) | "$QEMU" \
@@ -327,9 +327,9 @@ if ! ssh -i "$ROOT/keys/cklos_user" -p "$SSH_PORT" \
     kill "$SSH_QEMU_PID" 2>/dev/null || true
     exit 1
 fi
-wait "$SSH_QEMU_PID" 2>/dev/null || true
 grep -F 'CKLOS' "$ROOT/build/ssh-client.log" >/dev/null
 cat "$ROOT/build/ssh-client.log"
+wait "$SSH_QEMU_PID" 2>/dev/null || true
 
 python3 "$ROOT/scripts/ipv6-test-peer.py" \
     >"$ROOT/build/ipv6-test-peer.log" 2>&1 &

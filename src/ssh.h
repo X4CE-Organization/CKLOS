@@ -4,6 +4,7 @@
 #include "types.h"
 
 bool ssh_init(void);
+void ssh_poll(void);
 bool ssh_console_active(void);
 void ssh_console_putc(char character);
 bool ssh_console_read(char *character);
