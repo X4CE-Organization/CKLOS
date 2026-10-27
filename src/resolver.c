@@ -47,6 +47,58 @@ bool resolver_parse_ipv4(const char *text, uint32_t *address) {
     return true;
 }
 
+bool resolver_parse_ipv6(const char *text, uint8_t address[16]) {
+    uint16_t groups[8] = {0};
+    int count = 0;
+    int gap = -1;
+    const char *cursor = text;
+    if (*cursor == '[') cursor++;
+    if (strncmp(cursor, "::", 2) == 0) {
+        gap = 0;
+        cursor += 2;
+    }
+    while (*cursor && *cursor != ']') {
+        if (*cursor == ':') return false;
+        uint32_t value = 0;
+        uint32_t digits = 0;
+        while ((*cursor >= '0' && *cursor <= '9')
+               || (*cursor >= 'a' && *cursor <= 'f')
+               || (*cursor >= 'A' && *cursor <= 'F')) {
+            char value_char = *cursor++;
+            uint32_t digit = value_char <= '9' ? value_char - '0'
+                           : (value_char | 0x20) - 'a' + 10;
+            value = value * 16 + digit;
+            if (++digits > 4) return false;
+        }
+        if (!digits || count >= 8) return false;
+        groups[count++] = (uint16_t)value;
+        if (!*cursor || *cursor == ']') break;
+        if (*cursor != ':') return false;
+        cursor++;
+        if (*cursor == ':') {
+            if (gap >= 0) return false;
+            gap = count;
+            cursor++;
+        }
+    }
+    if (*cursor == ']' && cursor[1]) return false;
+    if (gap >= 0) {
+        int move = count - gap;
+        if (count >= 8) return false;
+        for (int index = 1; index <= move; index++) {
+            groups[8 - index] = groups[count - index];
+        }
+        for (int index = gap; index < 8 - move; index++) groups[index] = 0;
+        count = 8;
+    }
+    if (count != 8) return false;
+    for (int index = 0; index < 8; index++) {
+        address[index * 2] = (uint8_t)(groups[index] >> 8);
+        address[index * 2 + 1] = (uint8_t)groups[index];
+    }
+    return true;
+}
+
 static bool hosts_lookup(const char *host, uint32_t *address) {
     uint32_t size;
     if (fs2_stat("/etc/hosts", &size, 0) != 0 || !size || size > 65536) {
@@ -195,5 +247,6 @@ bool resolver_lookup_ipv4(const char *host, uint32_t *address, uint32_t timeout_
 }
 
 bool resolver_lookup_ipv6(const char *host, uint8_t address[16], uint32_t timeout_ms) {
+    if (resolver_parse_ipv6(host, address)) return true;
     return lookup(host, 28, address, 16, timeout_ms);
 }

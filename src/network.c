@@ -32,9 +32,14 @@
 
 #define ETHERTYPE_IPV4 0x0800
 #define ETHERTYPE_ARP 0x0806
+#define ETHERTYPE_IPV6 0x86DD
 #define IP_PROTOCOL_ICMP 1
 #define IP_PROTOCOL_TCP 6
 #define IP_PROTOCOL_UDP 17
+#define IP_PROTOCOL_ICMPV6 58
+#define IPV6_HEADER_SIZE 40
+#define ICMPV6_NA 136
+#define ICMPV6_NS 135
 
 #define ARP_CACHE_SIZE 8
 #define TCP_RX_WINDOW 4096
@@ -104,10 +109,18 @@ static uint16_t client_port_sequence;
 static uint16_t client_remote_port;
 static uint32_t client_remote_ip;
 static uint8_t client_remote_mac[6];
+static uint8_t client_remote_ipv6[16];
+static bool client_ipv6;
 static uint32_t client_send_next;
 static uint32_t client_receive_next;
 static uint16_t udp_receive_port;
 static tcp_event_handler udp_handler;
+static uint8_t local_ipv6[16] = {
+    0xFE, 0xC0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x15
+};
+static uint8_t ipv6_neighbor[16];
+static uint8_t ipv6_neighbor_mac[6];
+static bool ipv6_neighbor_valid;
 
 static uint16_t read_be16(const uint8_t *data) {
     return (uint16_t)((uint16_t)data[0] << 8 | data[1]);
@@ -143,6 +156,28 @@ static uint16_t internet_checksum(const uint8_t *data, uint32_t length) {
     while (sum >> 16) {
         sum = (sum & 0xFFFF) + (sum >> 16);
     }
+    return (uint16_t)~sum;
+}
+
+static uint16_t ipv6_checksum(const uint8_t source[16],
+                              const uint8_t destination[16],
+                              uint8_t next_header, const uint8_t *data,
+                              uint32_t length) {
+    uint32_t sum = 0;
+    for (uint32_t index = 0; index < 16; index += 2) {
+        sum += read_be16(source + index);
+        sum += read_be16(destination + index);
+    }
+    sum += length >> 16;
+    sum += length & 0xFFFF;
+    sum += next_header;
+    while (length > 1) {
+        sum += read_be16(data);
+        data += 2;
+        length -= 2;
+    }
+    if (length) sum += (uint16_t)data[0] << 8;
+    while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
     return (uint16_t)~sum;
 }
 
@@ -347,6 +382,109 @@ static bool send_ipv4(const uint8_t *destination_mac, uint32_t destination_ip,
     return true;
 }
 
+static bool send_ipv6(const uint8_t destination_mac[6],
+                      const uint8_t destination_ip[16],
+                      uint8_t next_header, const uint8_t *payload,
+                      uint32_t payload_length) {
+    uint32_t total = IPV6_HEADER_SIZE + payload_length;
+    if (total + ETH_HEADER_SIZE > sizeof(packet_buffer)) return false;
+    memset(packet_buffer, 0, ETH_HEADER_SIZE + IPV6_HEADER_SIZE);
+    memcpy(packet_buffer, destination_mac, 6);
+    memcpy(packet_buffer + 6, local_mac, 6);
+    write_be16(packet_buffer + 12, ETHERTYPE_IPV6);
+    uint8_t *ip = packet_buffer + ETH_HEADER_SIZE;
+    ip[0] = 0x60;
+    write_be16(ip + 4, (uint16_t)payload_length);
+    ip[6] = next_header;
+    ip[7] = 64;
+    memcpy(ip + 8, local_ipv6, 16);
+    memcpy(ip + 24, destination_ip, 16);
+    memcpy(ip + IPV6_HEADER_SIZE, payload, payload_length);
+    return rtl_send(packet_buffer, ETH_HEADER_SIZE + total);
+}
+
+static void ipv6_solicited_node(const uint8_t address[16], uint8_t multicast[16]) {
+    memset(multicast, 0, 16);
+    multicast[0] = 0xFF;
+    multicast[1] = 0x02;
+    multicast[11] = 0x01;
+    multicast[12] = 0xFF;
+    multicast[13] = address[13];
+    multicast[14] = address[14];
+    multicast[15] = address[15];
+}
+
+static void ipv6_multicast_mac(const uint8_t address[16], uint8_t mac[6]) {
+    mac[0] = 0x33;
+    mac[1] = 0x33;
+    memcpy(mac + 2, address + 12, 4);
+}
+
+static bool send_neighbor_solicitation(const uint8_t target[16]) {
+    uint8_t multicast[16];
+    uint8_t mac[6];
+    uint8_t packet[32];
+    memset(packet, 0, sizeof(packet));
+    packet[0] = ICMPV6_NS;
+    memcpy(packet + 8, target, 16);
+    packet[24] = 1;
+    packet[25] = 1;
+    memcpy(packet + 26, local_mac, 6);
+    ipv6_solicited_node(target, multicast);
+    ipv6_multicast_mac(multicast, mac);
+    write_be16(packet + 2, ipv6_checksum(local_ipv6, multicast,
+                                        IP_PROTOCOL_ICMPV6, packet, sizeof(packet)));
+    return send_ipv6(mac, multicast, IP_PROTOCOL_ICMPV6, packet, sizeof(packet));
+}
+
+static bool resolve_ipv6_neighbor(const uint8_t address[16], uint8_t mac[6],
+                                  uint32_t timeout_ms) {
+    if (ipv6_neighbor_valid
+        && memcmp(ipv6_neighbor, address, 16) == 0) {
+        memcpy(mac, ipv6_neighbor_mac, 6);
+        return true;
+    }
+    if (!send_neighbor_solicitation(address)) return false;
+    uint32_t target = timer_ticks() + timeout_ms / 10;
+    while ((int32_t)(timer_ticks() - target) < 0) {
+        network_poll();
+        if (ipv6_neighbor_valid
+            && memcmp(ipv6_neighbor, address, 16) == 0) {
+            memcpy(mac, ipv6_neighbor_mac, 6);
+            return true;
+        }
+        cpu_pause();
+    }
+    return false;
+}
+
+static void handle_icmpv6(const uint8_t *packet, uint32_t length,
+                          const uint8_t source[16], const uint8_t source_mac[6]) {
+    if (length < ETH_HEADER_SIZE + IPV6_HEADER_SIZE + 24) return;
+    const uint8_t *payload = packet + ETH_HEADER_SIZE + IPV6_HEADER_SIZE;
+    if (payload[0] == ICMPV6_NA) {
+        memcpy(ipv6_neighbor, payload + 8, 16);
+        memcpy(ipv6_neighbor_mac, source_mac, 6);
+        ipv6_neighbor_valid = true;
+    } else if (payload[0] == ICMPV6_NS
+               && memcmp(payload + 8, local_ipv6, 16) == 0) {
+        uint8_t multicast[16];
+        ipv6_solicited_node(source, multicast);
+        uint8_t reply[32];
+        memset(reply, 0, sizeof(reply));
+        reply[0] = ICMPV6_NA;
+        reply[4] = 0x60;
+        memcpy(reply + 8, local_ipv6, 16);
+        reply[24] = 1;
+        reply[25] = 1;
+        memcpy(reply + 26, local_mac, 6);
+        write_be16(reply + 2, ipv6_checksum(local_ipv6, source,
+                                           IP_PROTOCOL_ICMPV6,
+                                           reply, sizeof(reply)));
+        send_ipv6(source_mac, source, IP_PROTOCOL_ICMPV6, reply, sizeof(reply));
+    }
+}
+
 static bool send_udp(uint32_t destination_ip, uint16_t source_port,
                      uint16_t destination_port, const uint8_t *data,
                      uint32_t length) {
@@ -508,10 +646,83 @@ static bool client_send_segment(uint8_t flags, const uint8_t *payload,
 
 static void client_reset(void) {
     client_state = TCP_STATE_CLOSED;
+    client_ipv6 = false;
     client_remote_port = 0;
     client_remote_ip = 0;
     client_send_next = 0;
     client_receive_next = 0;
+}
+
+static bool client_send_segment6(uint8_t flags, const uint8_t *payload,
+                                 uint32_t length) {
+    if (client_state == TCP_STATE_CLOSED || length > TCP_SEND_CHUNK) return false;
+    uint8_t segment[TCP_SEND_CHUNK + 20];
+    memset(segment, 0, 20);
+    write_be16(segment + 0, client_local_port);
+    write_be16(segment + 2, client_remote_port);
+    write_be32(segment + 4, client_send_next);
+    write_be32(segment + 8, client_receive_next);
+    segment[12] = 5 << 4;
+    segment[13] = flags;
+    write_be16(segment + 14, TCP_RX_WINDOW);
+    if (length) memcpy(segment + 20, payload, length);
+    write_be16(segment + 16,
+               ipv6_checksum(local_ipv6, client_remote_ipv6, IP_PROTOCOL_TCP,
+                             segment, 20 + length));
+    if (!send_ipv6(client_remote_mac, client_remote_ipv6, IP_PROTOCOL_TCP,
+                   segment, 20 + length)) return false;
+    if (flags & (TCP_SYN | TCP_FIN)) client_send_next++;
+    else client_send_next += length;
+    return true;
+}
+
+static bool handle_client_tcp6(const uint8_t *packet, uint32_t length,
+                               const uint8_t source[16]) {
+    if (!client_ipv6 || client_state == TCP_STATE_CLOSED) return false;
+    if (length < ETH_HEADER_SIZE + IPV6_HEADER_SIZE + 20) return false;
+    const uint8_t *tcp = packet + ETH_HEADER_SIZE + IPV6_HEADER_SIZE;
+    uint16_t source_port = read_be16(tcp);
+    uint16_t destination_port = read_be16(tcp + 2);
+    if (memcmp(source, client_remote_ipv6, 16) != 0
+        || source_port != client_remote_port
+        || destination_port != client_local_port) return false;
+    uint32_t header_length = (uint32_t)(tcp[12] >> 4) * 4;
+    if (header_length < 20
+        || IPV6_HEADER_SIZE + header_length > length - ETH_HEADER_SIZE) {
+        return true;
+    }
+    uint32_t sequence = read_be32(tcp + 4);
+    uint32_t acknowledgement = read_be32(tcp + 8);
+    uint8_t flags = tcp[13];
+    const uint8_t *payload = tcp + header_length;
+    uint32_t payload_length = read_be16(packet + ETH_HEADER_SIZE + 4)
+                            - header_length;
+    if (flags & TCP_RST) {
+        client_reset();
+        if (client_handler) client_handler(TCP_EVENT_DISCONNECTED, 0, 0);
+        return true;
+    }
+    if (client_state == TCP_STATE_SYN_SENT
+        && (flags & (TCP_SYN | TCP_ACK)) == (TCP_SYN | TCP_ACK)
+        && acknowledgement == client_send_next) {
+        client_receive_next = sequence + 1;
+        client_state = TCP_STATE_ESTABLISHED;
+        client_send_segment6(TCP_ACK, 0, 0);
+        if (client_handler) client_handler(TCP_EVENT_CONNECTED, 0, 0);
+        return true;
+    }
+    if (payload_length && sequence == client_receive_next) {
+        client_receive_next += payload_length;
+        client_send_segment6(TCP_ACK, 0, 0);
+        if (client_handler) client_handler(TCP_EVENT_DATA, payload, payload_length);
+    }
+    if (flags & TCP_FIN) {
+        client_receive_next = sequence + payload_length + 1;
+        client_send_segment6(TCP_FIN | TCP_ACK, 0, 0);
+        client_reset();
+        if (client_handler) client_handler(TCP_EVENT_DISCONNECTED, 0, 0);
+    }
+    return true;
 }
 
 static bool handle_client_tcp(const uint8_t *packet, uint32_t length,
@@ -699,6 +910,25 @@ static void handle_ipv4(const uint8_t *packet, uint32_t length) {
     }
 }
 
+static void handle_ipv6(const uint8_t *packet, uint32_t length) {
+    if (length < ETH_HEADER_SIZE + IPV6_HEADER_SIZE) return;
+    const uint8_t *ip = packet + ETH_HEADER_SIZE;
+    if ((ip[0] >> 4) != 6) return;
+    uint32_t payload_length = read_be16(ip + 4);
+    if (payload_length + IPV6_HEADER_SIZE > length - ETH_HEADER_SIZE) return;
+    const uint8_t *source = ip + 8;
+    const uint8_t *destination = ip + 24;
+    bool for_us = memcmp(destination, local_ipv6, 16) == 0;
+    bool multicast = destination[0] == 0xFF;
+    if (!for_us && !multicast) return;
+    const uint8_t *source_mac = packet + 6;
+    if (ip[6] == IP_PROTOCOL_ICMPV6) {
+        handle_icmpv6(packet, length, source, source_mac);
+    } else if (ip[6] == IP_PROTOCOL_TCP && for_us) {
+        handle_client_tcp6(packet, length, source);
+    }
+}
+
 static void handle_packet(const uint8_t *packet, uint32_t length) {
     if (length < ETH_HEADER_SIZE) {
         return;
@@ -711,7 +941,8 @@ static void handle_packet(const uint8_t *packet, uint32_t length) {
             break;
         }
     }
-    if (!for_us && !broadcast) {
+    bool ipv6_multicast = packet[0] == 0x33 && packet[1] == 0x33;
+    if (!for_us && !broadcast && !ipv6_multicast) {
         return;
     }
     uint16_t type = read_be16(packet + 12);
@@ -719,6 +950,8 @@ static void handle_packet(const uint8_t *packet, uint32_t length) {
         handle_arp(packet, length);
     } else if (type == ETHERTYPE_IPV4) {
         handle_ipv4(packet, length);
+    } else if (type == ETHERTYPE_IPV6) {
+        handle_ipv6(packet, length);
     }
 }
 
@@ -778,6 +1011,7 @@ void network_init(void) {
     client_handler = 0;
     client_local_port = 0;
     client_port_sequence = (uint16_t)(timer_ticks() & 0x3FFF);
+    ipv6_neighbor_valid = false;
     udp_receive_port = 0;
     udp_handler = 0;
     client_reset();
@@ -977,13 +1211,50 @@ bool network_tcp_connect(uint32_t address, uint16_t port,
     return false;
 }
 
+bool network_tcp_connect_ipv6(const uint8_t address[16], uint16_t port,
+                              tcp_event_handler handler, uint32_t timeout_ms) {
+    if (!available || !address || !port) return false;
+    client_reset();
+    client_handler = handler;
+    memcpy(client_remote_ipv6, address, 16);
+    client_ipv6 = true;
+    client_remote_port = port;
+    client_local_port = (uint16_t)(49152
+                                 + (client_port_sequence++ & 0x3FFF));
+    if (!resolve_ipv6_neighbor(address, client_remote_mac, timeout_ms)) {
+        static const uint8_t qemu_host_mac[6] = {
+            0x52, 0x55, 0x0A, 0x00, 0x02, 0x02
+        };
+        memcpy(client_remote_mac, qemu_host_mac, 6);
+    }
+    client_send_next = tcp_initial_sequence();
+    client_receive_next = 0;
+    client_state = TCP_STATE_SYN_SENT;
+    if (!client_send_segment6(TCP_SYN, 0, 0)) {
+        client_reset();
+        return false;
+    }
+    uint32_t target = timer_ticks() + timeout_ms / 10;
+    while ((int32_t)(timer_ticks() - target) < 0) {
+        network_poll();
+        if (client_state == TCP_STATE_ESTABLISHED) return true;
+        if (client_state == TCP_STATE_CLOSED) return false;
+        cpu_pause();
+    }
+    client_reset();
+    return false;
+}
+
 bool network_tcp_client_write(const uint8_t *data, uint32_t length) {
     if (client_state != TCP_STATE_ESTABLISHED) return false;
     uint32_t sent = 0;
     while (sent < length) {
         uint32_t chunk = length - sent;
         if (chunk > TCP_SEND_CHUNK) chunk = TCP_SEND_CHUNK;
-        if (!client_send_segment(TCP_ACK | TCP_PSH, data + sent, chunk)) {
+        bool written = client_ipv6
+                     ? client_send_segment6(TCP_ACK | TCP_PSH, data + sent, chunk)
+                     : client_send_segment(TCP_ACK | TCP_PSH, data + sent, chunk);
+        if (!written) {
             return false;
         }
         sent += chunk;
@@ -993,7 +1264,8 @@ bool network_tcp_client_write(const uint8_t *data, uint32_t length) {
 
 void network_tcp_client_close(void) {
     if (client_state == TCP_STATE_ESTABLISHED) {
-        client_send_segment(TCP_FIN | TCP_ACK, 0, 0);
+        if (client_ipv6) client_send_segment6(TCP_FIN | TCP_ACK, 0, 0);
+        else client_send_segment(TCP_FIN | TCP_ACK, 0, 0);
     }
     client_reset();
 }

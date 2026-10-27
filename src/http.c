@@ -49,7 +49,7 @@ static void append_uint(char *output, uint32_t capacity, uint32_t *length,
 
 static bool parse_url(const char *url, char *host, uint32_t host_size,
                       uint16_t *port, char *path, uint32_t path_size,
-                      bool *tls) {
+                      bool *tls, bool *ipv6_literal) {
     const char *cursor = url;
     if (strncmp(cursor, "http://", 7) == 0) {
         cursor += 7;
@@ -63,13 +63,17 @@ static bool parse_url(const char *url, char *host, uint32_t host_size,
         return false;
     }
     uint32_t length = 0;
-    while (*cursor && *cursor != '/' && *cursor != ':'
-           && *cursor != '?' && *cursor != '#') {
+    *ipv6_literal = *cursor == '[';
+    if (*ipv6_literal) cursor++;
+    while (*cursor && *cursor != '/' && *cursor != '?'
+           && *cursor != '#' && (*ipv6_literal || *cursor != ':')) {
+        if (*ipv6_literal && *cursor == ']') break;
         if (length + 1 >= host_size) return false;
         host[length++] = *cursor++;
     }
     host[length] = '\0';
     if (!length) return false;
+    if (*ipv6_literal && *cursor == ']') cursor++;
     if (*cursor == ':') {
         cursor++;
         uint32_t value = 0;
@@ -200,7 +204,8 @@ static bool resolve_redirect(const char *base, bool tls, const char *host,
 }
 
 static bool build_request(const http_options *options, bool tls,
-                          const char *host, uint16_t port, const char *path,
+                          bool ipv6_host, const char *host, uint16_t port,
+                          const char *path,
                           uint32_t resume_from,
                           char *request, uint32_t capacity, uint32_t *request_size) {
     uint32_t length = 0;
@@ -211,7 +216,9 @@ static bool build_request(const http_options *options, bool tls,
     append_text(request, capacity, &length, " ");
     append_text(request, capacity, &length, path);
     append_text(request, capacity, &length, " HTTP/1.1\r\nHost: ");
+    if (ipv6_host) append_text(request, capacity, &length, "[");
     append_text(request, capacity, &length, host);
+    if (ipv6_host) append_text(request, capacity, &length, "]");
     if ((tls && port != 443) || (!tls && port != 80)) {
         append_text(request, capacity, &length, ":");
         append_uint(request, capacity, &length, port);
@@ -277,15 +284,27 @@ bool http_perform(const http_options *options, http_result *result) {
         char path[1024];
         uint16_t port;
         bool tls;
+        bool ipv6_literal;
         if (!parse_url(current.url, host, sizeof(host), &port, path,
-                       sizeof(path), &tls)) {
+                       sizeof(path), &tls, &ipv6_literal)) {
             if (result) strcpy(result->error, "invalid URL");
             return false;
         }
-        uint32_t address;
-        if (!resolver_lookup_ipv4(host, &address, 4000)) {
-            if (result) strcpy(result->error, "host resolution failed");
-            return false;
+        uint32_t address = 0;
+        uint8_t address6[16];
+        bool use_ipv6 = false;
+        if (ipv6_literal) {
+            if (!resolver_lookup_ipv6(host, address6, 4000)) {
+                if (result) strcpy(result->error, "IPv6 resolution failed");
+                return false;
+            }
+            use_ipv6 = true;
+        } else if (!resolver_lookup_ipv4(host, &address, 4000)) {
+            if (!resolver_lookup_ipv6(host, address6, 4000)) {
+                if (result) strcpy(result->error, "host resolution failed");
+                return false;
+            }
+            use_ipv6 = true;
         }
         if (options->verbose) {
             console_write("Connecting to ");
@@ -303,7 +322,8 @@ bool http_perform(const http_options *options, http_result *result) {
         char request[HTTP_REQUEST_MAX];
         uint32_t request_size;
         uint32_t resume_from = options->resume ? options->resume_from : 0;
-        if (!build_request(&current, tls, host, port, path, resume_from, request,
+        if (!build_request(&current, tls, use_ipv6, host, port, path,
+                           resume_from, request,
                            sizeof(request), &request_size)) {
             kfree(transfer.data);
             transfer.data = 0;
@@ -314,14 +334,19 @@ bool http_perform(const http_options *options, http_result *result) {
         if (tls) {
             uint32_t size = 0;
             transferred = tls_https_request(host, address, port,
+                                            use_ipv6, address6,
                                             (const uint8_t *)request, request_size,
                                             transfer.data, HTTP_RESPONSE_MAX,
                                             &size, options->verbose);
             transfer.size = size;
         } else {
-            transferred = network_tcp_connect(
-                address, port, transfer_handler,
-                options->connect_timeout_ms ? options->connect_timeout_ms : 5000);
+            uint32_t timeout_ms = options->connect_timeout_ms
+                                ? options->connect_timeout_ms : 5000;
+            transferred = use_ipv6
+                        ? network_tcp_connect_ipv6(address6, port,
+                                                   transfer_handler, timeout_ms)
+                        : network_tcp_connect(address, port,
+                                              transfer_handler, timeout_ms);
             if (transferred) {
                 transferred = network_tcp_client_write(
                     (const uint8_t *)request, request_size);

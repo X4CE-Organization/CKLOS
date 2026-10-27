@@ -7,6 +7,7 @@
 - ICMP echo
 - IPv4 TCP listener and outgoing client
 - IPv4 UDP
+- IPv6 neighbor discovery and outgoing TCP client
 - DNS A and AAAA queries through QEMU's DNS server
 - `/etc/hosts` lookup and direct numeric IPv4 addresses
 - HTTP/1.1 GET, POST, redirects, ranges and `Connection: close`
@@ -48,6 +49,7 @@ or proxy modes.
 
 `dns HOST` prints A and AAAA records when available.
 
-IPv6 AAAA lookup is implemented, but IPv6 packet transmission and IPv6 HTTP
-connections are not yet complete. HTTP transfer currently uses IPv4. HTTPS
-uses the pinned Mozilla trust store for public certificate authorities.
+IPv6 AAAA lookup, neighbor discovery, TCPv6 and HTTP/1.1 use the same DNS,
+resolver, transfer and TLS interfaces as IPv4. The automated suite runs a
+host-side Ethernet peer and verifies NDP plus a TCPv6 HTTP download.
+HTTPS uses the pinned Mozilla trust store for public certificate authorities.

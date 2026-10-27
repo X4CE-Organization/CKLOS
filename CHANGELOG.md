@@ -29,12 +29,14 @@ All notable changes to CKLOS are documented here.
 - Deterministic HTTP/HTTPS fixture server covering redirects, POST, auth,
   ranges and request headers.
 - Pinned Mozilla/curl CA bundle and a bounded multi-anchor BearSSL trust store.
+- IPv6 neighbor discovery, outgoing TCPv6, dual-stack URL transport and an
+  Ethernet-level IPv6 HTTP integration peer.
 - Automated `cki` interaction test that types, saves and reopens UTF-8 text.
 
 ### Known limitations
 
 - IPv6 DNS is present, but IPv6 packet transmission is not complete.
-- IPv6 transport and every GNU wget/curl option are not yet supported.
+- Every GNU wget/curl option is not yet supported.
 - `cki` uses post-editor PS/2 polling and leaves PIT interrupts masked until
   reboot; this avoids a kernel interrupt-return fault that still requires a
   dedicated scheduler repair.

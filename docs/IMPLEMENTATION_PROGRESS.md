@@ -8,7 +8,7 @@ This file is the source of truth for the batched native-toolchain implementation
 | ELF64, ring 3, syscalls, libc | 0.9.0 | complete and tested |
 | TinyCC and cck | 0.10.0 | complete and tested |
 | VBE, Unicode and cki | 0.11.0 | complete and tested |
-| IPv4/IPv6, cwgt and curl | 0.12.0 | IPv4 clients/tools complete; IPv6 transport pending |
+| IPv4/IPv6, cwgt and curl | 0.12.0 | core complete and tested; extended curl options pending |
 | Clang/GCC C++ evaluation | 0.13.0 | complete: probe and reports, no C++ compiler |
 
 Rules:
@@ -136,11 +136,11 @@ Verification:
 - Local HTTP server download into CKLOSFS2.
 - Local HTTPS server download through BearSSL.
 - Public DNS A and AAAA response parsing.
+- IPv6 NDP and TCPv6 HTTP transfer against a deterministic Ethernet peer.
 - Downloaded files are listed after reboot.
 
 Remaining network work:
 
-- IPv6 packet transmission and IPv6 HTTP/HTTPS.
 - Full GNU `cwgt`/`curl` option compatibility, persistent cookie jars,
   multipart upload, proxies and compressed responses.
 - A dedicated kernel interrupt-return repair so editor polling can return to

@@ -4,6 +4,7 @@
 #include "types.h"
 
 bool tls_https_request(const char *host, uint32_t address, uint16_t port,
+                       bool ipv6, const uint8_t address6[16],
                        const uint8_t *request, uint32_t request_size,
                        uint8_t *response, uint32_t capacity, uint32_t *size,
                        bool verbose);

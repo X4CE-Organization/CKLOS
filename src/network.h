@@ -32,6 +32,8 @@ const uint8_t *network_mac_address(void);
 bool network_tcp_listen(uint16_t port, tcp_event_handler handler);
 bool network_tcp_connect(uint32_t address, uint16_t port,
                          tcp_event_handler handler, uint32_t timeout_ms);
+bool network_tcp_connect_ipv6(const uint8_t address[16], uint16_t port,
+                              tcp_event_handler handler, uint32_t timeout_ms);
 bool network_tcp_write(const uint8_t *data, uint32_t length);
 void network_tcp_close(void);
 bool network_tcp_established(void);

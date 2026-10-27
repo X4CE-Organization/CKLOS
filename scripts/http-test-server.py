@@ -5,6 +5,7 @@ import argparse
 import base64
 import http.server
 import pathlib
+import socket
 import ssl
 import sys
 import urllib.parse
@@ -75,11 +76,17 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("root")
     parser.add_argument("--port", type=int, required=True)
+    parser.add_argument("--bind", default="127.0.0.1")
     parser.add_argument("--cert")
     parser.add_argument("--key")
     args = parser.parse_args()
-    server = http.server.ThreadingHTTPServer(
-        ("127.0.0.1", args.port),
+    server_class = http.server.ThreadingHTTPServer
+    if ":" in args.bind:
+        class IPv6Server(server_class):
+            address_family = socket.AF_INET6
+        server_class = IPv6Server
+    server = server_class(
+        (args.bind, args.port),
         lambda *a, **k: Handler(*a, directory=args.root, **k),
     )
     if args.cert:

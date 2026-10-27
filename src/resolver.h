@@ -6,5 +6,6 @@
 bool resolver_parse_ipv4(const char *text, uint32_t *address);
 bool resolver_lookup_ipv4(const char *host, uint32_t *address, uint32_t timeout_ms);
 bool resolver_lookup_ipv6(const char *host, uint8_t address[16], uint32_t timeout_ms);
+bool resolver_parse_ipv6(const char *text, uint8_t address[16]);
 
 #endif

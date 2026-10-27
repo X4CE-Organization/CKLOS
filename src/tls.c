@@ -262,6 +262,7 @@ static bool response_complete(const uint8_t *data, uint32_t size) {
 }
 
 bool tls_https_request(const char *host, uint32_t address, uint16_t port,
+                       bool ipv6, const uint8_t address6[16],
                        const uint8_t *request, uint32_t request_size,
                        uint8_t *response, uint32_t capacity, uint32_t *size,
                        bool verbose) {
@@ -274,7 +275,10 @@ bool tls_https_request(const char *host, uint32_t address, uint16_t port,
     }
     socket_buffer.size = 0;
     socket_buffer.disconnected = false;
-    if (!network_tcp_connect(address, port, socket_handler, 5000)) {
+    bool connected = ipv6
+                   ? network_tcp_connect_ipv6(address6, port, socket_handler, 5000)
+                   : network_tcp_connect(address, port, socket_handler, 5000);
+    if (!connected) {
         if (verbose) console_write("TLS: TCP connect failed.\n");
         return false;
     }

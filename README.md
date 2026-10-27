@@ -38,7 +38,7 @@ BIOS -> CKLOS 两阶段引导器 -> x86-64 长模式 -> C 内核 -> CKLOS GUI
 - CMOS 实时时钟、CPU 信息、内存布局和设备诊断
 - 整数计算、十六进制查看、颜色主题和 PC 扬声器测试
 
-这是 CKLOS 0.13.0 的开源 x86-64 图形内核版本。它已经有长模式、分页、任务切换、两级持久化存储、ELF64 用户态隔离、静态 musl libc、系统内 C 编译器、VBE 高分辨率图形、UTF-8 编辑器、TCP/IP、DNS、HTTP、TLS 和可执行文件。0.13.0 同时提供 Clang/LLVM 与 GCC 的 C++ 前端独立评估，但尚未提供 C++ 编译器。系统还不是 Linux 那样的完整通用操作系统：IPv6 传输、SSH、USB 和完整桌面尚未完成。
+这是 CKLOS 0.13.0 的开源 x86-64 图形内核版本。它已经有长模式、分页、任务切换、两级持久化存储、ELF64 用户态隔离、静态 musl libc、系统内 C 编译器、VBE 高分辨率图形、UTF-8 编辑器、IPv4/IPv6 TCP、DNS、HTTP、TLS 和可执行文件。0.13.0 同时提供 Clang/LLVM 与 GCC 的 C++ 前端独立评估，但尚未提供 C++ 编译器。系统还不是 Linux 那样的完整通用操作系统：SSH、USB 和完整桌面尚未完成。
 
 ## 安装依赖
 
@@ -217,6 +217,6 @@ linker.ld               内核链接布局
 
 ## 网络与后续路线
 
-HTTP/1.1、HTTPS、DNS A/AAAA 查询和 IPv4 客户端工具已经可用。当前 HTTPS
-测试使用镜像中的 CKLOS 测试 CA；通用公网访问仍需多证书 CA bundle。IPv6
-仅完成 DNS 查询，IPv6 传输、SSH、HTTP/2/3 和完整代理支持仍在后续批次。
+HTTP/1.1、HTTPS、DNS A/AAAA 查询和 IPv4/IPv6 客户端工具已经可用，并同时
+验证本地测试 CA 与固定 Mozilla CA bundle。SSH、HTTP/2/3 和完整代理支持
+仍在后续批次。

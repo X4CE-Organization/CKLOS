@@ -10,6 +10,7 @@ TEST_DATA_IMAGE="$ROOT/build/cklos-test-data.img"
 TEST_FS2_IMAGE="$ROOT/build/cklos-test-fs2.img"
 LOG="$ROOT/build/qemu-test.log"
 PERSIST_LOG="$ROOT/build/qemu-persist-test.log"
+IPV6_LOG="$ROOT/build/qemu-ipv6-test.log"
 QEMU=${QEMU:-$(command -v qemu-system-x86_64 2>/dev/null || true)}
 
 if [ -z "$QEMU" ]; then
@@ -25,7 +26,7 @@ python3 "$ROOT/scripts/http-test-server.py" "$ROOT/programs" \
     --key "$ROOT/build/test-key.pem" \
     >"$ROOT/build/https-test-server.log" 2>&1 &
 HTTPS_PID=$!
-trap 'kill $HTTP_PID $HTTPS_PID 2>/dev/null || true' EXIT HUP INT TERM
+trap 'kill $HTTP_PID $HTTPS_PID ${IPV6_PID:-} 2>/dev/null || true' EXIT HUP INT TERM
 sleep 1
 
 dd if=/dev/zero of="$TEST_IMAGE" bs=512 count=2880 2>/dev/null
@@ -294,6 +295,54 @@ for expected in \
 do
     if ! grep -F "$expected" "$LOG" >/dev/null; then
         echo "Test failed: missing '$expected'" >&2
+        exit 1
+    fi
+done
+
+python3 "$ROOT/scripts/ipv6-test-peer.py" \
+    >"$ROOT/build/ipv6-test-peer.log" 2>&1 &
+IPV6_PID=$!
+sleep 0.5
+set +e
+{
+    sleep 2
+    printf '\r'
+    sleep 0.2
+    printf 'curl -v -o /home/cklos/ipv6.c http://[fec0::2]:18082/cck_hello.c\r'
+    sleep 8
+    printf 'fscat /home/cklos/ipv6.c\r'
+    sleep 0.3
+    printf 'shutdown\r'
+    sleep 1
+} | "$QEMU" \
+    -m 64M \
+    -cpu max \
+    -drive "file=$TEST_IMAGE,format=raw,if=floppy" \
+    -boot a \
+    -drive "file=$TEST_DATA_IMAGE,format=raw,if=ide,index=0" \
+    -drive "file=$TEST_FS2_IMAGE,format=raw,if=ide,index=1" \
+    -netdev socket,id=net0,connect=127.0.0.1:19090 \
+    -device rtl8139,netdev=net0,mac=52:54:00:12:34:56 \
+    -display none \
+    -serial stdio \
+    -monitor none \
+    -no-reboot \
+    -device isa-debug-exit >"$IPV6_LOG" 2>&1
+status=$?
+set -e
+kill "$IPV6_PID" 2>/dev/null || true
+cat "$IPV6_LOG"
+if [ "$status" -ne 33 ] && [ "$status" -ne 0 ]; then
+    echo "IPv6 test: unexpected QEMU status $status" >&2
+    exit 1
+fi
+for expected in \
+    'HTTP 200  53 bytes -> /home/cklos/ipv6.c' \
+    '#include <stdio.h>' \
+    'Shutting down CKLOS'
+do
+    if ! grep -F "$expected" "$IPV6_LOG" >/dev/null; then
+        echo "IPv6 test failed: missing '$expected'" >&2
         exit 1
     fi
 done
