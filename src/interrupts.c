@@ -147,6 +147,9 @@ void timer_sleep_ms(uint32_t milliseconds) {
 }
 
 void interrupts_init(void) {
+    __asm__ volatile("cli");
+    outb(0x21, 0xFF);
+    outb(0xA1, 0xFF);
     memset(idt, 0, sizeof(idt));
     for (uint32_t vector = 0; vector < 48; vector++) {
         idt_set_gate(vector, interrupt_stubs[vector], 0x8E);
@@ -159,6 +162,9 @@ void interrupts_init(void) {
     pic_remap();
     pit_init();
     ticks = 0;
+}
+
+void interrupts_enable(void) {
     __asm__ volatile("sti");
 }
 

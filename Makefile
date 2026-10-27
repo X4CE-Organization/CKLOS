@@ -8,6 +8,7 @@ FS2_IMAGE := $(BUILD)/cklos-fs2.img
 UNIFONT_IMAGE := $(BUILD)/UNIFONT.BIN
 BEARSSL_LIB := third_party/bearssl/build-cklos/libbearssl.a
 TEST_CA := $(BUILD)/test-ca.der
+CA_BUNDLE := $(BUILD)/ca-certificates.crt
 USER_HELLO_ELF := $(BUILD)/USERHELLO.ELF
 USER_FORK_ELF := $(BUILD)/USERFORK.ELF
 USER_FAULT_ELF := $(BUILD)/USERFAULT.ELF
@@ -272,6 +273,9 @@ $(BEARSSL_LIB): scripts/build-bearssl.sh scripts/fetch-crypto.sh | $(BUILD)
 $(TEST_CA): scripts/make-test-cert.sh | $(BUILD)
 	./scripts/make-test-cert.sh
 
+$(CA_BUNDLE): scripts/fetch-ca-bundle.sh | $(BUILD)
+	./scripts/fetch-ca-bundle.sh
+
 keys: | $(BUILD)
 	@./scripts/gen-ssh-keys.sh
 
@@ -293,14 +297,14 @@ $(BUILD)/kernel.bin: $(BUILD)/kernel.elf
 
 $(BUILD)/fs2-root/.stamp: $(BUILD)/HELLO.RKS $(USER_ELVES) \
 	tools/make-fs2-root.py $(MUSL_STAMP) $(CCK_STAMP) \
-	$(UNIFONT_IMAGE) $(TEST_CA) | $(BUILD)
+	$(UNIFONT_IMAGE) $(TEST_CA) $(CA_BUNDLE) | $(BUILD)
 	python3 tools/make-fs2-root.py $(BUILD)/fs2-root $(BUILD)/HELLO.RKS \
 		$(USER_ELVES) --musl $(MUSL_STAGE) \
 		--toolchain $(CCK_STAGE) --sample programs/cck_hello.c \
 		--sdk include --license third_party/musl/COPYRIGHT \
 		--tinycc-license third_party/tinycc/COPYING \
 		--font $(UNIFONT_IMAGE) --unifont-license third_party/unifont/COPYING \
-		--trust-anchor $(TEST_CA)
+		--trust-anchor $(TEST_CA) --ca-bundle $(CA_BUNDLE)
 	touch $@
 
 $(BUILD)/mkfs2: tools/mkfs2.c third_party/littlefs/lfs.c third_party/littlefs/lfs_util.c | fs2 $(BUILD)

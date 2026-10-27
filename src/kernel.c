@@ -29,6 +29,7 @@ void kernel_main(const boot_info *info) {
     interrupts_init();
     tasks_init();
     process_init();
+    interrupts_enable();
     console_set_color(COLOR_LIGHT_GRAY, COLOR_BLACK);
     console_write(
         "\n"

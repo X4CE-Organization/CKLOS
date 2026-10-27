@@ -40,6 +40,7 @@ tinycc_license = None
 font = None
 unifont_license = None
 trust_anchor = None
+ca_bundle = None
 arguments = sys.argv[3:]
 index = 0
 while index < len(arguments):
@@ -71,6 +72,9 @@ while index < len(arguments):
     elif argument == "--trust-anchor":
         index += 1
         trust_anchor = pathlib.Path(arguments[index])
+    elif argument == "--ca-bundle":
+        index += 1
+        ca_bundle = pathlib.Path(arguments[index])
     else:
         executables.append(pathlib.Path(argument))
     index += 1
@@ -131,6 +135,11 @@ if trust_anchor is not None:
     target = root / "etc" / "ssl" / "certs"
     target.mkdir(parents=True, exist_ok=True)
     shutil.copy2(trust_anchor, target / "cklos-test-ca.der")
+
+if ca_bundle is not None:
+    target = root / "etc" / "ssl" / "certs"
+    target.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(ca_bundle, target / "ca-certificates.crt")
 
 if license is not None:
     license_target = root / "usr" / "share" / "licenses" / "musl"

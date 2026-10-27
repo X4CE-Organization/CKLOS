@@ -140,8 +140,7 @@ Verification:
 
 Remaining network work:
 
-- IPv6 packet transmission and IPv6 TCP HTTP/HTTPS.
-- Full Mozilla CA bundle trust-store ingestion.
+- IPv6 packet transmission and IPv6 HTTP/HTTPS.
 - Full GNU `cwgt`/`curl` option compatibility, persistent cookie jars,
   multipart upload, proxies and compressed responses.
 - A dedicated kernel interrupt-return repair so editor polling can return to

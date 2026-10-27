@@ -16,6 +16,7 @@ typedef struct {
 } interrupt_frame;
 
 void interrupts_init(void);
+void interrupts_enable(void);
 void interrupts_set_device_polling(bool polling);
 void timer_tick(void);
 uint32_t timer_ticks(void);

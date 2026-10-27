@@ -12,10 +12,11 @@
 - HTTP/1.1 GET, POST, redirects, ranges and `Connection: close`
 - BearSSL TLS 1.2 client with SNI, X.509 verification and RSA/ECDSA profiles
 
-The test image installs a generated trust anchor at
-`/etc/ssl/certs/cklos-test-ca.der`. It is used only by the HTTPS integration
-test. A multi-anchor Mozilla CA bundle loader remains future work; the current
-TLS client does not yet claim universal public-web certificate compatibility.
+The factory image installs a pinned Mozilla CA extract at
+`/etc/ssl/certs/ca-certificates.crt` and also keeps a generated integration
+anchor at `/etc/ssl/certs/cklos-test-ca.der`. BearSSL loads all valid PEM and
+DER anchors into a bounded multi-anchor trust store for SNI hostname and X.509
+chain verification.
 
 ## `cwgt`
 
@@ -49,5 +50,4 @@ or proxy modes.
 
 IPv6 AAAA lookup is implemented, but IPv6 packet transmission and IPv6 HTTP
 connections are not yet complete. HTTP transfer currently uses IPv4. HTTPS
-currently trusts the CKLOS test CA installed in the test image; a public CA
-bundle loader remains required for general Internet use.
+uses the pinned Mozilla trust store for public certificate authorities.

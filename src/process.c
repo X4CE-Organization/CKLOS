@@ -1,5 +1,6 @@
 #include "console.h"
 #include "fs2.h"
+#include "io.h"
 #include "memory.h"
 #include "process.h"
 #include "rks2.h"
@@ -135,7 +136,7 @@ typedef struct {
 static uint64_t gdt[7];
 static process_tss tss;
 static uint8_t exception_stack[32768] __attribute__((aligned(16)));
-static process processes[PROCESS_LIMIT];
+static process *processes;
 static int32_t current_process = -1;
 static int32_t next_pid = 1;
 static int32_t last_exit = -1;
@@ -1228,10 +1229,12 @@ mmap_done:
             frame->rax = (uint64_t)open_file(slot, path, (uint32_t)frame->rsi);
             break;
         }
-        case SYS_PIPE:
-            frame->rax = (uint64_t)create_pipe(
+        case SYS_PIPE: {
+            int32_t pipe_result = create_pipe(
                 slot, (int32_t *)(uintptr_t)frame->rdi);
+            frame->rax = (uint64_t)pipe_result;
             break;
+        }
         case SYS_DUP: {
             uint64_t target = 3;
             while (target < 11 && slot->files[target - 3].used) target++;
@@ -1407,7 +1410,14 @@ static void set_code_descriptor(uint32_t index, uint64_t descriptor) {
 
 void process_init(void) {
     kernel_cr3 = read_cr3();
-    memset(processes, 0, sizeof(processes));
+    uint8_t *process_storage = (uint8_t *)kmalloc(
+        sizeof(process) * PROCESS_LIMIT + 15);
+    if (!process_storage) {
+        console_write("PROCESS: unable to allocate process table.\n");
+        cpu_halt();
+    }
+    processes = (process *)(((uintptr_t)process_storage + 15) & ~(uintptr_t)15);
+    memset(processes, 0, sizeof(process) * PROCESS_LIMIT);
     current_process = -1;
     next_pid = 1;
     preempt_ticks = 0;
