@@ -242,7 +242,7 @@ static void draw_editor(editor_state *editor) {
     gui_fill_rect(0, 32, width, 36, 8);
     uint32_t button_x = 12;
     const char *labels[4] = {"SAVE", "OPEN", "FIND", "UNDO"};
-    const uint8_t colors[4] = {10, 11, 14, 9};
+    const uint8_t colors[4] = {10, 11, 1, 9};
     for (uint32_t index = 0; index < 4; index++) {
         gui_fill_rect(button_x, 38, 64, 22, colors[index]);
         gui_draw_text(button_x + 12, 42, labels[index], 0, 0xFF);
@@ -276,7 +276,7 @@ static void draw_editor(editor_state *editor) {
                 at += consumed;
             }
             if (caret < number_width + text_width) {
-                gui_fill_rect(caret, y, 2, 16, 14);
+                gui_fill_rect(caret, y, 2, 16, 15);
             }
         }
         line++;
@@ -297,7 +297,7 @@ static void draw_editor(editor_state *editor) {
     gui_draw_text(10, height - 21, position, 15, 0xFF);
     gui_draw_text(180, height - 21, editor->path, 11, 0xFF);
     gui_draw_text(width - 180, height - 21,
-                  editor->modified ? "MODIFIED" : "READY", 14, 0xFF);
+                  editor->modified ? "MODIFIED" : "READY", 12, 0xFF);
     if (editor->status[0]) {
         gui_draw_text(10, height - 44, editor->status, 0, 14);
     }
@@ -317,7 +317,7 @@ static void prompt_path(editor_state *editor) {
     uint32_t length = 0;
     path[0] = '\0';
     while (1) {
-        gui_fill_rect(0, gui_height() - 44, gui_width(), 24, 14);
+        gui_fill_rect(0, gui_height() - 44, gui_width(), 24, 11);
         gui_draw_text(10, gui_height() - 38, "Open: ", 0, 0xFF);
         gui_draw_text(58, gui_height() - 38, path, 0, 0xFF);
         uint16_t key = input_getchar();
@@ -346,7 +346,7 @@ static void find_text(editor_state *editor) {
     uint32_t length = 0;
     query[0] = '\0';
     while (1) {
-        gui_fill_rect(0, gui_height() - 44, gui_width(), 24, 14);
+        gui_fill_rect(0, gui_height() - 44, gui_width(), 24, 11);
         gui_draw_text(10, gui_height() - 38, "Find: ", 0, 0xFF);
         gui_draw_text(58, gui_height() - 38, query, 0, 0xFF);
         uint16_t key = input_getchar();
