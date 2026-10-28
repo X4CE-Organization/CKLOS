@@ -10,8 +10,8 @@ All notable changes to CKLOS are documented here.
   800x600 and VGA fallbacks.
 - Mouse movement and button input continue through PS/2 controller polling
   after leaving `cki`, instead of freezing until a keyboard event.
-- `SYS` and `NET` panels toggle on a second click. `HIDE` closes the panel
-  without clearing terminal output, and the covered terminal area is restored.
+- `SYS` and `NET` panels toggle on a second click. `CLR` closes any open panel
+  and clears the terminal window.
 
 ## 0.15.0 — 2026-10-27
 

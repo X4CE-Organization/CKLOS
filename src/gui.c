@@ -200,7 +200,7 @@ static void chrome(void) {
     gui_fill_rect(168, 8, 64, 18, 10);
     text_at(180, 13, "NET", 0);
     gui_fill_rect(240, 8, 64, 18, 12);
-    text_at(252, 13, "HIDE", 0);
+    text_at(252, 13, "CLR", 0);
     text_at(screen_width - 96, 11, "AMD64", 14);
 
     gui_fill_rect(window_x + 6, window_y + 6, window_width, window_height, 0);
@@ -410,6 +410,7 @@ void gui_tick(void) {
             }
         } else if (cursor_x >= 240 && cursor_x < 304) {
             hide_panel();
+            gui_clear();
         }
     }
     cursor_show();
