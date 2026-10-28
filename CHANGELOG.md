@@ -2,6 +2,15 @@
 
 All notable changes to CKLOS are documented here.
 
+## 0.15.1 — 2026-10-28
+
+### Fixed
+
+- Default VBE mode is now 1280x800, with deterministic 1280x720, 1024x768,
+  800x600 and VGA fallbacks.
+- Mouse movement and button input continue through PS/2 controller polling
+  after leaving `cki`, instead of freezing until a keyboard event.
+
 ## 0.15.0 — 2026-10-27
 
 ### Added

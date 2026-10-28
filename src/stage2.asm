@@ -88,6 +88,16 @@ stage2_start:
     cmp ax, 0x004F
     jne .vga_fallback
 
+    mov word [requested_width], 1280
+    mov word [requested_height], 800
+    call vbe_find_mode
+    test ax, ax
+    jnz .vbe_set_mode
+    mov word [requested_width], 1280
+    mov word [requested_height], 720
+    call vbe_find_mode
+    test ax, ax
+    jnz .vbe_set_mode
     mov word [requested_width], 1024
     mov word [requested_height], 768
     call vbe_find_mode
@@ -278,8 +288,8 @@ sectors_left dw KERNEL_SECTORS
 sector db 0
 head db 0
 e820_count dw 0
-requested_width dw 1024
-requested_height dw 768
+requested_width dw 1280
+requested_height dw 800
 selected_mode dw 0
 mode_width dw 0
 mode_height dw 0

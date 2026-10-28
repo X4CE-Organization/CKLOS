@@ -222,9 +222,9 @@ if [ "$status" -ne 33 ] && [ "$status" -ne 0 ]; then
 fi
 
 for expected in \
-    'CKLOS 0.15.0 kernel is running' \
+    'CKLOS 0.15.1 kernel is running' \
     'CKLOS>' \
-    'OS        CKLOS 0.15.0' \
+    'OS        CKLOS 0.15.1' \
     'PIT 100 Hz' \
     'Uptime' \
     'Heap allocator: PASS' \
@@ -256,7 +256,7 @@ for expected in \
     'FSCHECK: metadata valid' \
     'persistence survives reboot' \
     '你好 CKLOS' \
-    'VBE linear 1024x768x32' \
+    'VBE linear 1280x800x32' \
     '你好 CKLOS editor' \
     'TLS handshake/read complete' \
     'HTTP 200  112 bytes -> /home/cklos/https-download.c' \

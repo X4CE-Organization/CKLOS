@@ -309,7 +309,7 @@ static void show_panel(void) {
         text_at(panel_x + 12, panel_y + 32,
                 CKLOS_NAME " " CKLOS_VERSION " x86-64", 14);
         text_at(panel_x + 12, panel_y + 48,
-                linear_framebuffer ? "VBE 1024x768x32" : "VGA 320x200x256", 7);
+                linear_framebuffer ? "VBE LINEAR 32-BIT" : "VGA 320x200x256", 7);
         text_at(panel_x + 12, panel_y + 64, "MOUSE  PS/2 IRQ12", 11);
         text_at(panel_x + 12, panel_y + 80,
                 mouse_available() ? "STATUS ONLINE" : "STATUS WAIT", 10);

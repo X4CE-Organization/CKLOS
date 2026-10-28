@@ -163,7 +163,7 @@ static uint16_t serial_read_escape(void) {
 uint16_t input_getchar(void) {
     while (1) {
         __asm__ volatile("cli");
-        if (editor_polling) {
+        if (editor_polling || editor_quiet_mode) {
             uint8_t controller_status = inb(0x64);
             if ((controller_status & 0x01) && !(controller_status & 0x20)) {
                 handle_scancode(inb(0x60));
