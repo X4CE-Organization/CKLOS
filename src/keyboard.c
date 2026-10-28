@@ -171,6 +171,9 @@ uint16_t input_getchar(void) {
                 mouse_poll_controller();
             }
         }
+        if (editor_polling && mouse_click_pending()) {
+            return KEY_MOUSE_CLICK;
+        }
         uint16_t character = keyboard_queue_pop();
         if (character) {
             return character;

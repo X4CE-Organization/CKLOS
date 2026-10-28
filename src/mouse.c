@@ -151,6 +151,10 @@ bool mouse_take_click(void) {
     return result;
 }
 
+bool mouse_click_pending(void) {
+    return click_pending;
+}
+
 bool mouse_available(void) {
     return initialized;
 }

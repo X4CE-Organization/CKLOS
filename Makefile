@@ -40,7 +40,7 @@ OBJCOPY ?= $(shell if [ -x "$(LLVM_PREFIX)/bin/llvm-objcopy" ]; then \
 QEMU ?= $(shell command -v qemu-system-x86_64 2>/dev/null)
 HOST_OS := $(shell uname -s)
 ifeq ($(HOST_OS),Darwin)
-QEMU_RUN_DISPLAY ?= cocoa,zoom-to-fit=on,show-cursor=on
+QEMU_RUN_DISPLAY ?= cocoa,zoom-to-fit=off,show-cursor=on
 endif
 QEMU_DISPLAY_ARG := $(if $(QEMU_RUN_DISPLAY),-display $(QEMU_RUN_DISPLAY))
 HOST_SSH_PORT ?= 2222

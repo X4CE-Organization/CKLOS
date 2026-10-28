@@ -58,7 +58,7 @@ make
 make run
 ```
 
-`make run` 会在 macOS 上打开启用 `zoom-to-fit` 和 `show-cursor` 的 QEMU 窗口，并在当前终端中同步显示串口输出。系统优先进入 1024×768×32 VBE 模式，失败时回退到 800×600 或 VGA 320×200。点击窗口后移动鼠标，CKLOS 会显示并移动自己的 PS/2 软件光标；顶部 `SYS`、`NET`、`CLR` 按钮可以直接点击。
+`make run` 会在 macOS 上以原生 1024×768 尺寸打开 QEMU 窗口，避免启动时被缩得过小，并同步显示串口输出。系统优先进入 1024×768×32 VBE 模式，失败时回退到 800×600 或 VGA 320×200。点击窗口后移动鼠标，CKLOS 会显示并移动自己的 PS/2 软件光标；顶部 `SYS`、`NET`、`CLR` 按钮可以直接点击。
 
 QEMU 捕获鼠标后，按 `Control + Option + G`（QEMU 文档中写作 `Ctrl+Alt+G`）即可释放鼠标和键盘，把控制权交还 macOS。再次按相同快捷键会重新捕获。
 
@@ -79,7 +79,7 @@ make term
 
 在 CKLOS Shell 中输入 `shutdown` 关闭虚拟机。`control-C` 可以中止当前的 `make run` 或 `make term` 命令。
 
-如果希望窗口像普通终端一样自由改变宽高，请使用 `make term`。串口控制台会跟随宿主终端尺寸自动换行，因此这是调整命令行窗口大小最方便的方式。也可以执行 `make run QEMU_RUN_DISPLAY=cocoa,zoom-to-fit=off` 关闭自动缩放。
+如果希望窗口像普通终端一样自由改变宽高，请使用 `make term`。串口控制台会跟随宿主终端尺寸自动换行，因此这是调整命令行窗口大小最方便的方式。也可以执行 `make run QEMU_RUN_DISPLAY=cocoa,zoom-to-fit=on` 让 QEMU 根据宿主屏幕缩放。
 
 生成的可启动镜像位于 `build/cklos.img`，旧版 2 MiB 数据盘位于 `build/cklos-data.img`，CKLOSFS2 数据盘位于 `build/cklos-fs2.img`。删除数据盘会清除已保存的用户文件。执行自动启动、调度、存储与跨重启测试：
 

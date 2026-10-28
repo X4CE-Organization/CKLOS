@@ -12,7 +12,8 @@ enum {
     KEY_END = 0x105,
     KEY_PAGE_UP = 0x106,
     KEY_PAGE_DOWN = 0x107,
-    KEY_ESCAPE = 0x108
+    KEY_ESCAPE = 0x108,
+    KEY_MOUSE_CLICK = 0x10A
 };
 
 uint16_t input_getchar(void);
