@@ -9,6 +9,9 @@
 #include "font8x8_basic.h"
 
 #define CURSOR_SIZE 16
+#define PANEL_WIDTH 300
+#define PANEL_HEIGHT 110
+#define PANEL_BYTES (PANEL_WIDTH * PANEL_HEIGHT * 4)
 
 static uint8_t *framebuffer = (uint8_t *)0xA0000;
 static uint32_t screen_width = 320;
@@ -35,6 +38,8 @@ static uint32_t window_y;
 static uint32_t window_width;
 static uint32_t window_height;
 static bool editor_mode;
+static uint8_t *panel_background;
+static bool panel_background_valid;
 static uint8_t utf8_pending[4];
 static uint32_t utf8_pending_length;
 static uint32_t utf8_pending_expected;
@@ -195,7 +200,7 @@ static void chrome(void) {
     gui_fill_rect(168, 8, 64, 18, 10);
     text_at(180, 13, "NET", 0);
     gui_fill_rect(240, 8, 64, 18, 12);
-    text_at(252, 13, "CLR", 0);
+    text_at(252, 13, "HIDE", 0);
     text_at(screen_width - 96, 11, "AMD64", 14);
 
     gui_fill_rect(window_x + 6, window_y + 6, window_width, window_height, 0);
@@ -296,7 +301,7 @@ static void cursor_show(void) {
 
 static void show_panel(void) {
     if (!active_panel) return;
-    uint32_t panel_width = 300;
+    uint32_t panel_width = PANEL_WIDTH;
     uint32_t panel_x = screen_width - panel_width - 24;
     uint32_t panel_y = 72;
     gui_fill_rect(panel_x, panel_y, panel_width, 110, 7);
@@ -321,6 +326,59 @@ static void show_panel(void) {
     }
 }
 
+static void capture_panel_background(uint32_t panel_x, uint32_t panel_y) {
+    if (!panel_background) {
+        panel_background = (uint8_t *)kmalloc(PANEL_BYTES);
+        if (!panel_background) return;
+    }
+    for (uint32_t y = 0; y < PANEL_HEIGHT; y++) {
+        for (uint32_t x = 0; x < PANEL_WIDTH; x++) {
+            uint32_t source_x = panel_x + x;
+            uint32_t source_y = panel_y + y;
+            uint32_t target = (y * PANEL_WIDTH + x) * 4;
+            uint8_t *address = framebuffer + source_y * screen_pitch;
+            if (screen_bpp == 32) {
+                *(uint32_t *)(panel_background + target) =
+                    ((uint32_t *)address)[source_x];
+            } else if (screen_bpp == 16) {
+                *(uint16_t *)(panel_background + target) =
+                    ((uint16_t *)address)[source_x];
+            } else {
+                panel_background[target] = address[source_x];
+            }
+        }
+    }
+    panel_background_valid = true;
+}
+
+static void hide_panel(void) {
+    if (!active_panel || !panel_background_valid) {
+        active_panel = 0;
+        return;
+    }
+    uint32_t panel_x = screen_width - PANEL_WIDTH - 24;
+    uint32_t panel_y = 72;
+    for (uint32_t y = 0; y < PANEL_HEIGHT; y++) {
+        for (uint32_t x = 0; x < PANEL_WIDTH; x++) {
+            uint32_t target_x = panel_x + x;
+            uint32_t target_y = panel_y + y;
+            uint32_t source = (y * PANEL_WIDTH + x) * 4;
+            uint8_t *address = framebuffer + target_y * screen_pitch;
+            if (screen_bpp == 32) {
+                ((uint32_t *)address)[target_x] =
+                    *(uint32_t *)(panel_background + source);
+            } else if (screen_bpp == 16) {
+                ((uint16_t *)address)[target_x] =
+                    *(uint16_t *)(panel_background + source);
+            } else {
+                address[target_x] = panel_background[source];
+            }
+        }
+    }
+    active_panel = 0;
+    panel_background_valid = false;
+}
+
 void gui_tick(void) {
     int32_t next_x = mouse_x();
     int32_t next_y = mouse_y();
@@ -330,13 +388,29 @@ void gui_tick(void) {
     cursor_x = next_x;
     cursor_y = next_y;
     if (click && cursor_y < 32) {
-        if (cursor_x >= 96 && cursor_x < 160) active_panel = 1;
-        else if (cursor_x >= 168 && cursor_x < 232) active_panel = 2;
-        else if (cursor_x >= 240 && cursor_x < 304) {
-            active_panel = 0;
-            gui_clear();
+        if (cursor_x >= 96 && cursor_x < 160) {
+            if (active_panel == 1) {
+                hide_panel();
+            } else {
+                if (!active_panel) {
+                    capture_panel_background(screen_width - PANEL_WIDTH - 24, 72);
+                }
+                active_panel = 1;
+                show_panel();
+            }
+        } else if (cursor_x >= 168 && cursor_x < 232) {
+            if (active_panel == 2) {
+                hide_panel();
+            } else {
+                if (!active_panel) {
+                    capture_panel_background(screen_width - PANEL_WIDTH - 24, 72);
+                }
+                active_panel = 2;
+                show_panel();
+            }
+        } else if (cursor_x >= 240 && cursor_x < 304) {
+            hide_panel();
         }
-        show_panel();
     }
     cursor_show();
 }
@@ -351,6 +425,7 @@ void gui_init(void) {
     foreground = 7;
     background = 0;
     active_panel = 0;
+    panel_background_valid = false;
     cursor_saved = false;
     cursor_x = (int32_t)screen_width / 2;
     cursor_y = (int32_t)screen_height / 2;
