@@ -15,13 +15,15 @@ USER_FAULT_ELF := $(BUILD)/USERFAULT.ELF
 USER_EXEC_ELF := $(BUILD)/USEREXEC.ELF
 USER_IO_ELF := $(BUILD)/USERIO.ELF
 USER_PIPE_ELF := $(BUILD)/USERPIPE.ELF
+USER_AGENT_ELF := $(BUILD)/USERAGENT.ELF
 MUSL_STAGE := $(BUILD)/musl-stage/usr/local/musl
 MUSL_STAMP := $(BUILD)/musl/.cklos-ready
 MUSL_ELF := $(BUILD)/MUSLHELLO.ELF
 CCK_STAGE := $(BUILD)/cklos-toolchain
 CCK_STAMP := $(BUILD)/tinycc/.cklos-ready
 USER_ELVES := $(USER_HELLO_ELF) $(USER_FORK_ELF) $(USER_FAULT_ELF) \
-	$(USER_EXEC_ELF) $(USER_IO_ELF) $(USER_PIPE_ELF) $(MUSL_ELF)
+	$(USER_EXEC_ELF) $(USER_IO_ELF) $(USER_PIPE_ELF) $(USER_AGENT_ELF) \
+	$(MUSL_ELF)
 KERNEL_MAX_BYTES := 524288
 VERSION := $(shell grep 'CKLOS_VERSION "' src/version.h | cut -d '"' -f2)
 
@@ -208,6 +210,17 @@ $(BUILD)/user_pipe.o: programs/user_pipe.c programs/user_syscall.h | $(BUILD)
 $(USER_PIPE_ELF): $(BUILD)/user_pipe.o programs/user.ld
 	$(LD_LLD) -m elf_x86_64 -T programs/user.ld --build-id=none -o $@ \
 		$(BUILD)/user_pipe.o
+
+$(BUILD)/user_agent.o: programs/agent_client.c programs/user_syscall.h | $(BUILD)
+	$(CLANG) --target=x86_64-none-elf -m64 -std=c11 -O2 -Wall -Wextra -Werror \
+		-ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
+		-fno-asynchronous-unwind-tables -fno-unwind-tables -mno-red-zone \
+		-mno-sse -mno-sse2 -mno-mmx -mno-80387 -mcmodel=large -nostdlib -Iprograms \
+		-c $< -o $@
+
+$(USER_AGENT_ELF): $(BUILD)/user_agent.o programs/user.ld
+	$(LD_LLD) -m elf_x86_64 -T programs/user.ld --build-id=none -o $@ \
+		$(BUILD)/user_agent.o
 
 $(MUSL_STAMP): scripts/fetch-musl.sh scripts/build-musl.sh | $(BUILD)
 	./scripts/build-musl.sh

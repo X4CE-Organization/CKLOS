@@ -21,7 +21,7 @@
 #define RTL_RCR 0x44
 #define RTL_CONFIG1 0x52
 
-#define RTL_RX_SIZE 8192
+#define RTL_RX_SIZE 32768
 #define RTL_RX_BUFFER_SIZE (RTL_RX_SIZE + 16)
 #define RTL_TX_BUFFER_SIZE 2048
 
@@ -50,6 +50,8 @@
 #define TCP_RST 0x04
 #define TCP_PSH 0x08
 #define TCP_ACK 0x10
+#define STREAM_LIMIT 6
+#define STREAM_LISTENER_LIMIT 3
 
 typedef enum {
     TCP_STATE_CLOSED,
@@ -66,6 +68,28 @@ typedef struct {
     bool valid;
 } arp_entry;
 
+typedef struct {
+    bool used;
+    uint32_t generation;
+    tcp_state state;
+    uint16_t local_port;
+    uint16_t remote_port;
+    uint32_t remote_ip;
+    uint8_t remote_mac[6];
+    uint32_t send_next;
+    uint32_t receive_next;
+    uint32_t deadline;
+    tcp_stream_handler handler;
+    void *context;
+} tcp_stream;
+
+typedef struct {
+    bool used;
+    uint16_t port;
+    tcp_stream_handler handler;
+    void *context;
+} tcp_listener;
+
 static uint16_t io_base;
 static bool available;
 static uint8_t local_mac[6];
@@ -81,7 +105,7 @@ static uint8_t tx_round_robin;
 static arp_entry arp_cache[ARP_CACHE_SIZE];
 static bool ping_replied;
 
-static uint8_t rx_buffer[RTL_RX_BUFFER_SIZE] __attribute__((aligned(8192)));
+static uint8_t *rx_buffer;
 static uint8_t tx_buffers[4][RTL_TX_BUFFER_SIZE] __attribute__((aligned(16)));
 static uint8_t packet_buffer[1600] __attribute__((aligned(16)));
 
@@ -121,6 +145,10 @@ static uint8_t local_ipv6[16] = {
 static uint8_t ipv6_neighbor[16];
 static uint8_t ipv6_neighbor_mac[6];
 static bool ipv6_neighbor_valid;
+static tcp_stream streams[STREAM_LIMIT];
+static tcp_listener stream_listeners[STREAM_LISTENER_LIMIT];
+static uint32_t stream_generation = 1;
+static uint16_t stream_port_sequence;
 
 static uint16_t read_be16(const uint8_t *data) {
     return (uint16_t)((uint16_t)data[0] << 8 | data[1]);
@@ -779,6 +807,156 @@ static bool handle_client_tcp(const uint8_t *packet, uint32_t length,
     return true;
 }
 
+static bool stream_send_segment(int id, uint8_t flags,
+                                const uint8_t *payload, uint32_t length) {
+    if (id < 0 || id >= STREAM_LIMIT || !streams[id].used
+        || length > TCP_SEND_CHUNK) return false;
+    tcp_stream *stream = &streams[id];
+    uint8_t segment[TCP_SEND_CHUNK + 20];
+    memset(segment, 0, 20);
+    write_be16(segment + 0, stream->local_port);
+    write_be16(segment + 2, stream->remote_port);
+    write_be32(segment + 4, stream->send_next);
+    write_be32(segment + 8, stream->receive_next);
+    segment[12] = 5 << 4;
+    segment[13] = flags;
+    write_be16(segment + 14, TCP_RX_WINDOW);
+    if (length) memcpy(segment + 20, payload, length);
+    write_be16(segment + 16,
+               tcp_checksum(local_ip, stream->remote_ip,
+                            segment, 20 + length));
+    if (!send_ipv4(stream->remote_mac, stream->remote_ip,
+                   IP_PROTOCOL_TCP, segment, 20 + length)) return false;
+    if (flags & (TCP_SYN | TCP_FIN)) stream->send_next++;
+    else stream->send_next += length;
+    return true;
+}
+
+static void stream_release(int id, bool disconnected) {
+    if (id < 0 || id >= STREAM_LIMIT || !streams[id].used) return;
+    tcp_stream_handler handler = streams[id].handler;
+    void *context = streams[id].context;
+    memset(&streams[id], 0, sizeof(streams[id]));
+    if (disconnected && handler) {
+        handler(id, TCP_EVENT_DISCONNECTED, 0, 0, context);
+    }
+}
+
+static bool handle_stream_tcp(const uint8_t *packet, uint32_t length,
+                              uint32_t source_ip, const uint8_t *source_mac) {
+    const uint8_t *ip = packet + ETH_HEADER_SIZE;
+    uint32_t ip_header_length = (uint32_t)(ip[0] & 0x0F) * 4;
+    if (length < ETH_HEADER_SIZE + ip_header_length + 20) return false;
+    const uint8_t *tcp = ip + ip_header_length;
+    uint32_t ip_total_length = read_be16(ip + 2);
+    uint32_t tcp_header_length = (uint32_t)(tcp[12] >> 4) * 4;
+    if (ip_total_length < ip_header_length + tcp_header_length) return false;
+    uint16_t source_port = read_be16(tcp);
+    uint16_t destination_port = read_be16(tcp + 2);
+    uint32_t sequence = read_be32(tcp + 4);
+    uint32_t acknowledgement = read_be32(tcp + 8);
+    uint8_t flags = tcp[13];
+    uint32_t payload_length =
+        ip_total_length - ip_header_length - tcp_header_length;
+    const uint8_t *payload = tcp + tcp_header_length;
+
+    for (int id = 0; id < STREAM_LIMIT; id++) {
+        tcp_stream *stream = &streams[id];
+        if (!stream->used || stream->local_port != destination_port
+            || stream->remote_port != source_port
+            || stream->remote_ip != source_ip) continue;
+        if (flags & TCP_RST) {
+            stream_release(id, true);
+            return true;
+        }
+        if (stream->state == TCP_STATE_SYN_SENT) {
+            if ((flags & (TCP_SYN | TCP_ACK)) == (TCP_SYN | TCP_ACK)
+                && acknowledgement == stream->send_next) {
+                stream->receive_next = sequence + 1;
+                stream->state = TCP_STATE_ESTABLISHED;
+                stream_send_segment(id, TCP_ACK, 0, 0);
+                tcp_stream_handler handler = stream->handler;
+                void *context = stream->context;
+                if (handler) {
+                    handler(id, TCP_EVENT_CONNECTED, 0, 0, context);
+                }
+            }
+            return true;
+        }
+    }
+
+    if ((flags & TCP_SYN) && !(flags & TCP_ACK)) {
+        for (uint32_t listener_index = 0;
+             listener_index < STREAM_LISTENER_LIMIT; listener_index++) {
+            tcp_listener *listener = &stream_listeners[listener_index];
+            if (!listener->used || listener->port != destination_port) continue;
+            for (int slot = 0; slot < STREAM_LIMIT; slot++) {
+                if (streams[slot].used) continue;
+                tcp_stream *stream = &streams[slot];
+                memset(stream, 0, sizeof(*stream));
+                stream->used = true;
+                stream->generation = stream_generation++;
+                if (!stream_generation) stream_generation = 1;
+                stream->state = TCP_STATE_SYN_RECEIVED;
+                stream->local_port = destination_port;
+                stream->remote_port = source_port;
+                stream->remote_ip = source_ip;
+                memcpy(stream->remote_mac, source_mac, 6);
+                stream->receive_next = sequence + 1;
+                stream->send_next = tcp_initial_sequence();
+                stream->handler = listener->handler;
+                stream->context = listener->context;
+                stream_send_segment(slot, TCP_SYN | TCP_ACK, 0, 0);
+                return true;
+            }
+        }
+    }
+
+    for (int id = 0; id < STREAM_LIMIT; id++) {
+        tcp_stream *stream = &streams[id];
+        if (!stream->used || stream->local_port != destination_port
+            || stream->remote_port != source_port
+            || stream->remote_ip != source_ip) continue;
+        if (flags & TCP_RST) {
+            stream_release(id, true);
+            return true;
+        }
+        if (stream->state == TCP_STATE_SYN_RECEIVED
+            && (flags & TCP_ACK) && acknowledgement == stream->send_next) {
+            stream->state = TCP_STATE_ESTABLISHED;
+            tcp_stream_handler handler = stream->handler;
+            void *context = stream->context;
+            uint32_t generation = stream->generation;
+            if (handler) {
+                handler(id, TCP_EVENT_CONNECTED, 0, 0, context);
+                if (!streams[id].used
+                    || streams[id].generation != generation) return true;
+            }
+        }
+        if (payload_length && sequence == stream->receive_next) {
+            stream->receive_next += payload_length;
+            stream_send_segment(id, TCP_ACK, 0, 0);
+            tcp_stream_handler handler = stream->handler;
+            void *context = stream->context;
+            uint32_t generation = stream->generation;
+            if (handler) {
+                handler(id, TCP_EVENT_DATA, payload, payload_length, context);
+                if (!streams[id].used
+                    || streams[id].generation != generation) return true;
+            }
+        } else if (payload_length) {
+            stream_send_segment(id, TCP_ACK, 0, 0);
+        }
+        if (flags & TCP_FIN) {
+            stream->receive_next = sequence + payload_length + 1;
+            stream_send_segment(id, TCP_FIN | TCP_ACK, 0, 0);
+            stream_release(id, true);
+        }
+        return true;
+    }
+    return false;
+}
+
 static void handle_tcp(const uint8_t *packet, uint32_t length,
                        uint32_t source_ip, const uint8_t *source_mac) {
     const uint8_t *ip = packet + ETH_HEADER_SIZE;
@@ -801,7 +979,8 @@ static void handle_tcp(const uint8_t *packet, uint32_t length,
     uint32_t payload_length = ip_total_length - ip_header_length - tcp_header_length;
     const uint8_t *payload = tcp + tcp_header_length;
 
-    if (handle_client_tcp(packet, length, source_ip)) {
+    if (handle_stream_tcp(packet, length, source_ip, source_mac)
+        || handle_client_tcp(packet, length, source_ip)) {
         return;
     }
 
@@ -1014,12 +1193,23 @@ void network_init(void) {
     ipv6_neighbor_valid = false;
     udp_receive_port = 0;
     udp_handler = 0;
+    memset(streams, 0, sizeof(streams));
+    memset(stream_listeners, 0, sizeof(stream_listeners));
+    stream_generation = 1;
+    stream_port_sequence = (uint16_t)(40000 + (timer_ticks() & 0x3FFF));
     client_reset();
     tcp_reset_connection(TCP_STATE_CLOSED);
+    rx_buffer = 0;
 
     if (!find_rtl8139()) {
         return;
     }
+    uint8_t *rx_storage = (uint8_t *)kmalloc(RTL_RX_BUFFER_SIZE + RTL_RX_SIZE);
+    if (!rx_storage) {
+        return;
+    }
+    rx_buffer = (uint8_t *)(((uintptr_t)rx_storage + RTL_RX_SIZE - 1)
+                          & ~(uintptr_t)(RTL_RX_SIZE - 1));
     rtl_write8(RTL_CONFIG1, 0x00);
     rtl_write8(RTL_CR, 0x10);
     for (uint32_t timeout = 0; timeout < 1000000; timeout++) {
@@ -1038,7 +1228,7 @@ void network_init(void) {
     }
     rtl_write16(0x3E, 0xFFFF);
     rtl_write16(RTL_IMR, 0x0005);
-    rtl_write32(RTL_RCR, 0x0000008F);
+    rtl_write32(RTL_RCR, 0x0000100F);
     rx_offset = inw(io_base + RTL_CBR);
     rtl_write16(RTL_CAPR, (uint16_t)(rx_offset - 16));
     rtl_write8(RTL_CR, 0x0C);
@@ -1050,6 +1240,14 @@ void network_init(void) {
 void network_poll(void) {
     if (available) {
         receive_packets();
+        for (int index = 0; index < STREAM_LIMIT; index++) {
+            tcp_stream *stream = &streams[index];
+            if (stream->used && stream->state == TCP_STATE_SYN_SENT
+                && stream->deadline
+                && (int32_t)(timer_ticks() - stream->deadline) >= 0) {
+                stream_release(index, true);
+            }
+        }
     }
 }
 
@@ -1178,6 +1376,156 @@ void network_tcp_close(void) {
 
 bool network_tcp_established(void) {
     return connection_state == TCP_STATE_ESTABLISHED;
+}
+
+static uint16_t next_stream_port(void) {
+    for (uint32_t attempt = 0; attempt < 20000; attempt++) {
+        uint16_t port = stream_port_sequence++;
+        if (port < 40000) {
+            stream_port_sequence = 40000;
+            port = 40000;
+        }
+        bool used = false;
+        for (int index = 0; index < STREAM_LIMIT; index++) {
+            if (streams[index].used && streams[index].local_port == port) {
+                used = true;
+                break;
+            }
+        }
+        for (int index = 0; !used && index < STREAM_LISTENER_LIMIT; index++) {
+            if (stream_listeners[index].used
+                && stream_listeners[index].port == port) used = true;
+        }
+        if (!used) return port;
+    }
+    return 0;
+}
+
+int network_stream_begin_open(uint32_t address, uint16_t port,
+                              tcp_stream_handler handler, void *context,
+                              uint32_t timeout_ms) {
+    if (!available || !address || !port) return -1;
+    int slot = -1;
+    for (int index = 0; index < STREAM_LIMIT; index++) {
+        if (!streams[index].used) {
+            slot = index;
+            break;
+        }
+    }
+    if (slot < 0) return -2;
+    tcp_stream *stream = &streams[slot];
+    memset(stream, 0, sizeof(*stream));
+    uint16_t local_port = next_stream_port();
+    if (!local_port) return -2;
+    stream->used = true;
+    stream->generation = stream_generation++;
+    if (!stream_generation) stream_generation = 1;
+    stream->state = TCP_STATE_SYN_SENT;
+    stream->local_port = local_port;
+    stream->remote_port = port;
+    stream->remote_ip = address;
+    stream->deadline = timer_ticks() + timeout_ms / 10;
+    stream->handler = handler;
+    stream->context = context;
+    if (!network_arp_resolve(address, stream->remote_mac, timeout_ms)) {
+        stream_release(slot, false);
+        return -3;
+    }
+    stream->send_next = tcp_initial_sequence();
+    if (!stream_send_segment(slot, TCP_SYN, 0, 0)) {
+        stream_release(slot, false);
+        return -4;
+    }
+    return slot;
+}
+
+int network_stream_open(uint32_t address, uint16_t port,
+                        tcp_stream_handler handler, void *context,
+                        uint32_t timeout_ms) {
+    int slot = network_stream_begin_open(address, port, handler, context,
+                                         timeout_ms);
+    if (slot < 0) return slot;
+    uint32_t target = timer_ticks() + timeout_ms / 10;
+    while ((int32_t)(timer_ticks() - target) < 0) {
+        network_poll();
+        if (!streams[slot].used) return -5;
+        if (streams[slot].state == TCP_STATE_ESTABLISHED) return slot;
+        cpu_pause();
+    }
+    stream_release(slot, true);
+    return -5;
+}
+
+int network_stream_listen(uint16_t port, tcp_stream_handler handler,
+                          void *context) {
+    if (!available || !handler) return -1;
+    int slot = -1;
+    for (int index = 0; index < STREAM_LISTENER_LIMIT; index++) {
+        if (!stream_listeners[index].used) {
+            slot = index;
+            break;
+        }
+    }
+    if (slot < 0) return -2;
+    if (!port) {
+        port = next_stream_port();
+        if (!port) return -3;
+    }
+    for (int index = 0; index < STREAM_LISTENER_LIMIT; index++) {
+        if (stream_listeners[index].used
+            && stream_listeners[index].port == port) return -4;
+    }
+    stream_listeners[slot].used = true;
+    stream_listeners[slot].port = port;
+    stream_listeners[slot].handler = handler;
+    stream_listeners[slot].context = context;
+    return slot;
+}
+
+bool network_stream_cancel_listen(int listener) {
+    if (listener < 0 || listener >= STREAM_LISTENER_LIMIT
+        || !stream_listeners[listener].used) return false;
+    memset(&stream_listeners[listener], 0, sizeof(stream_listeners[listener]));
+    return true;
+}
+
+bool network_stream_listener_valid(int listener) {
+    return listener >= 0 && listener < STREAM_LISTENER_LIMIT
+        && stream_listeners[listener].used;
+}
+
+uint16_t network_stream_listener_port(int listener) {
+    if (!network_stream_listener_valid(listener)) return 0;
+    return stream_listeners[listener].port;
+}
+
+bool network_stream_write(int id, const uint8_t *data, uint32_t length) {
+    if (id < 0 || id >= STREAM_LIMIT || !streams[id].used
+        || (streams[id].state != TCP_STATE_ESTABLISHED
+            && streams[id].state != TCP_STATE_CLOSE_WAIT)) return false;
+    uint32_t sent = 0;
+    while (sent < length) {
+        uint32_t chunk = length - sent;
+        if (chunk > TCP_SEND_CHUNK) chunk = TCP_SEND_CHUNK;
+        if (!stream_send_segment(id, TCP_ACK | TCP_PSH, data + sent, chunk)) {
+            return false;
+        }
+        sent += chunk;
+    }
+    return true;
+}
+
+void network_stream_close(int id) {
+    if (id < 0 || id >= STREAM_LIMIT || !streams[id].used) return;
+    if (streams[id].state == TCP_STATE_ESTABLISHED
+        || streams[id].state == TCP_STATE_CLOSE_WAIT) {
+        stream_send_segment(id, TCP_FIN | TCP_ACK, 0, 0);
+    }
+    stream_release(id, false);
+}
+
+bool network_stream_valid(int id) {
+    return id >= 0 && id < STREAM_LIMIT && streams[id].used;
 }
 
 bool network_tcp_connect(uint32_t address, uint16_t port,

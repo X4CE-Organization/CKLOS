@@ -17,6 +17,13 @@ enum {
     SYS_WRITEV = 20,
     SYS_PIPE = 22,
     SYS_GETPID = 39,
+    SYS_SOCKET = 41,
+    SYS_CONNECT = 42,
+    SYS_ACCEPT = 43,
+    SYS_SENDTO = 44,
+    SYS_RECVFROM = 45,
+    SYS_BIND = 49,
+    SYS_LISTEN = 50,
     SYS_FORK = 57,
     SYS_EXECVE = 59,
     SYS_EXIT = 60,
@@ -37,12 +44,19 @@ enum {
 #define CKLOS_EFAULT 14
 #define CKLOS_ENOENT 2
 #define CKLOS_EBADF 9
+#define CKLOS_EIO 5
 #define CKLOS_ECHILD 10
 #define CKLOS_EAGAIN 11
 #define CKLOS_ENOMEM 12
 #define CKLOS_EINVAL 22
 #define CKLOS_EMFILE 24
 #define CKLOS_ENOTTY 25
+#define CKLOS_ESPIPE 29
 #define CKLOS_ENOSYS 38
+#define CKLOS_ENOTSOCK 88
+#define CKLOS_EPROTONOSUPPORT 93
+#define CKLOS_EAFNOSUPPORT 97
+#define CKLOS_EADDRINUSE 98
+#define CKLOS_ECONNREFUSED 111
 
 #endif

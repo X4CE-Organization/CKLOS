@@ -174,3 +174,20 @@ Verification:
 
 - OpenSSH 9.9 completed key exchange, host signature verification, public-key
   authentication, remote `uname`, exit status and channel close.
+
+## 0.16.0 checkpoint
+
+Completed:
+
+- Multi-stream TCP and independent SSH channel/window state.
+- Real OpenSSH local forwarding, remote forwarding and concurrent local tunnels.
+- Agent forwarding with a ring-3 `AF_UNIX` stream endpoint and inherited
+  `SSH_AUTH_SOCK`.
+- SFTP v3 regression coverage on the multi-channel transport.
+
+Verification:
+
+- OpenSSH 9.9 transferred HTTP content through simultaneous `ssh -L` tunnels
+  and through `ssh -R`.
+- The shell and `/bin/USERAGENT.ELF` each queried identities from a host
+  `ssh-agent` through forwarded `auth-agent@openssh.com` channels.

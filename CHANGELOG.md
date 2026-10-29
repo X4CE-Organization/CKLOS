@@ -2,6 +2,39 @@
 
 All notable changes to CKLOS are documented here.
 
+## 0.16.0 — 2026-10-29
+
+### Added
+
+- Multi-stream IPv4 TCP with six concurrent streams, three guest listeners,
+  per-stream handshakes, FIN/RST handling and asynchronous outbound connects.
+- Independent SSH channel state, per-channel local/remote flow-control windows
+  and multiple concurrent session, forwarding and SFTP channels.
+- Real OpenSSH `ssh -L` local forwarding, including simultaneous `-L` tunnels.
+- Real OpenSSH `ssh -R` remote forwarding with `tcpip-forward`,
+  `cancel-tcpip-forward` and `forwarded-tcpip`.
+- SSH agent forwarding through `auth-agent@openssh.com`, a guest
+  `AF_UNIX`/`SOCK_STREAM` endpoint at `/tmp/cklos-ssh-agent.sock`, and
+  `SSH_AUTH_SOCK` in the ring-3 environment.
+- `/bin/USERAGENT.ELF`, a ring-3 agent protocol client using `socket`,
+  `connect`, `read`, `write` and `poll`.
+- A 32 KiB, cache-aligned RTL8139 receive ring for reliable bulk SSH transfers.
+- Dynamic 128 KiB kernel exception stacks, removing the fixed exception-stack
+  overflow encountered by network-heavy syscalls.
+
+### Fixed
+
+- Moved the SSH channel table from low BSS into the heap so kernel state no
+  longer overlaps the legacy BIOS/VGA ROM window around `0xA0000`.
+- Corrected DIRECT-TCPIP port parsing from `uint16` to the RFC 4254 `uint32`.
+- Corrected SFTP v3 READ/WRITE offsets from `uint32` to the specified `uint64`.
+- Corrected channel request replies to target the peer's client channel ID.
+- Fixed the Ed25519 signature blob stack allocation that could corrupt the
+  SSH host-key exchange after memory-layout changes.
+- Removed recursive SSH packet parsing during blocking forwarding setup.
+- Restored command-channel EOF handling so one-shot exec commands can finish
+  after the client closes its stdin.
+
 ## 0.15.1 — 2026-10-28
 
 ### Fixed

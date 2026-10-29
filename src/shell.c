@@ -15,6 +15,7 @@
 #include "rks.h"
 #include "resolver.h"
 #include "shell.h"
+#include "ssh.h"
 #include "string.h"
 #include "tasks.h"
 #include "unicode.h"
@@ -144,6 +145,7 @@ static void command_help(void) {
         "  PROCS             Show isolated process count and current PID\n"
         "  CCK ARGS          Run the native TinyCC-based C compiler\n"
         "  CKI FILE          Open the non-modal UTF-8 GUI editor\n"
+        "  AGENT             Query the forwarded SSH agent identities\n"
         "  CWGT URL          Download HTTP(S) content like wget\n"
         "  CURL URL          Transfer HTTP(S) content like curl\n"
         "  DNS HOST          Resolve IPv4/IPv6 DNS records\n"
@@ -1000,6 +1002,20 @@ static void command_cck(int argc) {
     }
 }
 
+static void command_agent(void) {
+    if (!ssh_agent_available()) {
+        console_write("AGENT: SSH agent forwarding is not enabled for this session.\n");
+        return;
+    }
+    console_printf("SSH_AUTH_SOCK=%s\n", ssh_agent_socket_path());
+    uint32_t count = 0;
+    if (!ssh_agent_request_identities(&count)) {
+        console_write("AGENT: identity request failed.\n");
+        return;
+    }
+    console_printf("AGENT: %u identities available.\n", count);
+}
+
 static void remote_name(const char *url, char *output, uint32_t capacity) {
     const char *cursor = url;
     while (*cursor && strncmp(cursor, "://", 3) != 0) cursor++;
@@ -1738,6 +1754,9 @@ static void run_command(int argc) {
         command_processes();
     } else if (strcmp(arguments[0], "cck") == 0) {
         command_cck(argc);
+    } else if (strcmp(arguments[0], "agent") == 0
+               || strcmp(arguments[0], "ssh-agent") == 0) {
+        command_agent();
     } else if (strcmp(arguments[0], "cki") == 0) {
         command_cki(argc);
     } else if (strcmp(arguments[0], "cwgt") == 0) {

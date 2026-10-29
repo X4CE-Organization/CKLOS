@@ -10,6 +10,9 @@ enum {
 };
 
 typedef void (*tcp_event_handler)(uint8_t event, const uint8_t *data, uint32_t length);
+typedef void (*tcp_stream_handler)(int id, uint8_t event,
+                                   const uint8_t *data, uint32_t length,
+                                   void *context);
 
 void network_init(void);
 void network_poll(void);
@@ -45,6 +48,20 @@ bool network_udp_send(uint32_t address, uint16_t source_port,
                       uint16_t destination_port, const uint8_t *data,
                       uint32_t length);
 void network_udp_set_receiver(uint16_t port, tcp_event_handler handler);
+int network_stream_open(uint32_t address, uint16_t port,
+                        tcp_stream_handler handler, void *context,
+                        uint32_t timeout_ms);
+int network_stream_begin_open(uint32_t address, uint16_t port,
+                              tcp_stream_handler handler, void *context,
+                              uint32_t timeout_ms);
+int network_stream_listen(uint16_t port, tcp_stream_handler handler,
+                          void *context);
+bool network_stream_cancel_listen(int listener);
+bool network_stream_listener_valid(int listener);
+uint16_t network_stream_listener_port(int listener);
+bool network_stream_write(int id, const uint8_t *data, uint32_t length);
+void network_stream_close(int id);
+bool network_stream_valid(int id);
 uint16_t network_tcp_local_port(void);
 uint16_t network_tcp_remote_port(void);
 uint32_t network_tcp_data_segments(void);

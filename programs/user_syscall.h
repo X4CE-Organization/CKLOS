@@ -23,6 +23,22 @@ static inline long user_write(int fd, const void *buffer, unsigned long length) 
     return user_syscall3(1, fd, (long)buffer, (long)length);
 }
 
+static inline long user_read_fd(int fd, void *buffer, unsigned long length) {
+    return user_syscall3(0, fd, (long)buffer, (long)length);
+}
+
+static inline long user_socket(long domain, long type, long protocol) {
+    return user_syscall3(41, domain, type, protocol);
+}
+
+static inline long user_connect(long fd, const void *address, unsigned long length) {
+    return user_syscall3(42, fd, (long)address, (long)length);
+}
+
+static inline long user_poll_fd(long fd) {
+    return user_syscall3(7, fd, 0, 0);
+}
+
 static inline long user_getpid(void) {
     return user_syscall1(39, 0);
 }

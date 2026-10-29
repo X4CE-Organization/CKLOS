@@ -1,6 +1,7 @@
 #include "console.h"
 #include "crypto.h"
 #include "fs2.h"
+#include "interrupts.h"
 #include "io.h"
 #include "memory.h"
 #include "network.h"
@@ -16,6 +17,13 @@
 #define SSH_INPUT_SIZE 512
 #define SFTP_HANDLE_LIMIT 8
 #define SFTP_BODY_MAX 60000
+#define SSH_CHANNEL_LIMIT 12
+#define SSH_CHANNEL_WINDOW (1024U * 1024U)
+#define REMOTE_FORWARD_LIMIT 3
+#define AGENT_SOCKET_PATH "/tmp/cklos-ssh-agent.sock"
+#define SSH_AGENT_RX_CAPACITY 65536
+#define SSH_AGENT_OPEN_TIMEOUT 5000
+#define SSH_CHANNEL_OUTPUT_CAPACITY 262144
 
 enum {
     SSH_MSG_DISCONNECT = 1,
@@ -30,6 +38,7 @@ enum {
     SSH_MSG_USERAUTH_SUCCESS = 52,
     SSH_MSG_USERAUTH_PK_OK = 60,
     SSH_MSG_GLOBAL_REQUEST = 80,
+    SSH_MSG_REQUEST_SUCCESS = 81,
     SSH_MSG_REQUEST_FAILURE = 82,
     SSH_MSG_CHANNEL_OPEN = 90,
     SSH_MSG_CHANNEL_OPEN_CONFIRMATION = 91,
@@ -47,7 +56,8 @@ typedef enum {
     SSH_CHANNEL_NONE,
     SSH_CHANNEL_CONSOLE,
     SSH_CHANNEL_SFTP,
-    SSH_CHANNEL_FORWARD,
+    SSH_CHANNEL_DIRECT,
+    SSH_CHANNEL_FORWARDED,
     SSH_CHANNEL_AGENT
 } ssh_channel_mode;
 
@@ -74,8 +84,43 @@ typedef enum {
     SSH_PHASE_FAILED
 } ssh_phase;
 
+typedef struct {
+    bool used;
+    ssh_channel_mode mode;
+    uint32_t generation;
+    uint32_t client_channel;
+    uint32_t server_channel;
+    uint32_t remote_window;
+    uint32_t local_window;
+    int stream;
+    bool confirmed;
+    bool close_sent;
+    bool close_received;
+    bool eof_sent;
+    bool eof_received;
+    bool pending_close;
+    int forward_index;
+    sftp_handle sftp_handles[SFTP_HANDLE_LIMIT];
+    uint8_t *sftp_input;
+    uint32_t sftp_input_length;
+    uint8_t *pending;
+    uint32_t pending_length;
+    uint32_t pending_capacity;
+    uint8_t *outbound;
+    uint32_t outbound_length;
+    uint32_t outbound_capacity;
+} ssh_channel;
+
+typedef struct {
+    bool used;
+    int listener;
+    char address[64];
+    uint16_t requested_port;
+    uint16_t port;
+} ssh_remote_forward;
+
 static ssh_phase phase;
-static char server_version[64];
+static char server_version[64] = SSH_SERVER_VERSION;
 static char client_version[128];
 static uint32_t client_version_length;
 static uint8_t *input;
@@ -96,13 +141,7 @@ static uint8_t send_key[32];
 static uint8_t receive_key[32];
 static cklos_aes_ctr send_cipher;
 static cklos_aes_ctr receive_cipher;
-static bool channel_open;
 static bool shell_active;
-static ssh_channel_mode channel_mode;
-static uint32_t client_channel;
-static uint32_t server_channel;
-static uint32_t remote_window;
-static uint32_t local_window;
 static uint8_t console_input[SSH_INPUT_SIZE];
 static uint32_t console_input_head;
 static uint32_t console_input_tail;
@@ -110,13 +149,28 @@ static char status_text[48] = "listening";
 static bool remote_exec_active;
 static char remote_output_tail[8];
 static uint32_t remote_output_length;
-static sftp_handle sftp_handles[SFTP_HANDLE_LIMIT];
-static uint8_t *sftp_input;
-static uint32_t sftp_input_length;
+static ssh_channel *channels;
+static ssh_channel *sftp_channel;
+static uint32_t channel_generation = 1;
+static uint32_t next_server_channel;
+static ssh_remote_forward remote_forwards[REMOTE_FORWARD_LIMIT];
+static int ssh_control_stream = -1;
+static int ssh_control_listener = -1;
+static bool processing_ssh_input;
+static ssh_channel *agent_channel;
+static uint8_t *agent_rx;
+static uint32_t agent_rx_length;
+static bool agent_rx_eof;
 
 static void send_message(const uint8_t *payload, uint32_t length);
 static void write_u32(uint8_t *output, uint32_t value);
 static uint32_t put_string(uint8_t *output, const void *data, uint32_t length);
+static void send_channel_data(ssh_channel *channel, const uint8_t *data,
+                              uint32_t length);
+static void channel_close(ssh_channel *channel, bool send_close);
+static void ssh_agent_poll(void);
+static void ssh_agent_receive(const uint8_t *data, uint32_t length);
+static void reset_connection_channels(void);
 
 static void queue_console_bytes(const uint8_t *data, uint32_t length) {
     for (uint32_t index = 0; index < length; index++) {
@@ -127,29 +181,110 @@ static void queue_console_bytes(const uint8_t *data, uint32_t length) {
     }
 }
 
+static ssh_channel *channel_lookup_server(uint32_t server_id) {
+    for (uint32_t index = 0; index < SSH_CHANNEL_LIMIT; index++) {
+        if (channels[index].used
+            && channels[index].server_channel == server_id) {
+            return &channels[index];
+        }
+    }
+    return 0;
+}
+
+static ssh_channel *channel_allocate(uint32_t client_id,
+                                     uint32_t remote_window) {
+    for (uint32_t index = 0; index < SSH_CHANNEL_LIMIT; index++) {
+        ssh_channel *channel = &channels[index];
+        if (channel->used) continue;
+        memset(channel, 0, sizeof(*channel));
+        channel->used = true;
+        channel->generation = channel_generation++;
+        if (!channel_generation) channel_generation = 1;
+        channel->client_channel = client_id;
+        channel->server_channel = next_server_channel++;
+        if (next_server_channel > 0x7FFFFFFFU) next_server_channel = 0;
+        channel->remote_window = remote_window;
+        channel->local_window = SSH_CHANNEL_WINDOW;
+        channel->stream = -1;
+        return channel;
+    }
+    return 0;
+}
+
+static bool channel_valid(const ssh_channel *channel) {
+    if (!channel || !channel->used) return false;
+    for (uint32_t index = 0; index < SSH_CHANNEL_LIMIT; index++) {
+        if (&channels[index] == channel) return true;
+    }
+    return false;
+}
+
+static void channel_free(ssh_channel *channel) {
+    if (!channel_valid(channel)) return;
+    if (channel->stream >= 0 && network_stream_valid(channel->stream)) {
+        network_stream_close(channel->stream);
+    }
+    if (channel->sftp_input) kfree(channel->sftp_input);
+    if (channel->pending) kfree(channel->pending);
+    if (channel->outbound) kfree(channel->outbound);
+    if (channel->mode == SSH_CHANNEL_CONSOLE) {
+        shell_active = false;
+        remote_exec_active = false;
+    }
+    if (channel->mode == SSH_CHANNEL_AGENT && agent_channel == channel) {
+        agent_channel = 0;
+        agent_rx_length = 0;
+        agent_rx_eof = true;
+    }
+    memset(channel, 0, sizeof(*channel));
+}
+
+static void channel_send_eof_close(ssh_channel *channel) {
+    if (!channel_valid(channel)) return;
+    uint32_t offset;
+    if (!channel->eof_sent) {
+        offset = 0;
+        send_payload[offset++] = SSH_MSG_CHANNEL_EOF;
+        write_u32(send_payload + offset, channel->client_channel);
+        offset += 4;
+        send_message(send_payload, offset);
+        channel->eof_sent = true;
+    }
+    if (!channel->close_sent) {
+        offset = 0;
+        send_payload[offset++] = SSH_MSG_CHANNEL_CLOSE;
+        write_u32(send_payload + offset, channel->client_channel);
+        offset += 4;
+        send_message(send_payload, offset);
+        channel->close_sent = true;
+    }
+}
+
+static void channel_close(ssh_channel *channel, bool send_close) {
+    if (!channel_valid(channel)) return;
+    if (send_close) channel_send_eof_close(channel);
+    if (channel->stream >= 0 && network_stream_valid(channel->stream)) {
+        network_stream_close(channel->stream);
+    }
+    channel_free(channel);
+}
+
 static void close_remote_channel(void) {
-    uint32_t offset = 0;
-    send_payload[offset++] = SSH_MSG_CHANNEL_REQUEST;
-    write_u32(send_payload + offset, client_channel);
-    offset += 4;
-    offset += put_string(send_payload + offset, "exit-status", 11);
-    send_payload[offset++] = 0;
-    write_u32(send_payload + offset, 0);
-    offset += 4;
-    send_message(send_payload, offset);
-    offset = 0;
-    send_payload[offset++] = SSH_MSG_CHANNEL_EOF;
-    write_u32(send_payload + offset, client_channel);
-    offset += 4;
-    send_message(send_payload, offset);
-    offset = 0;
-    send_payload[offset++] = SSH_MSG_CHANNEL_CLOSE;
-    write_u32(send_payload + offset, client_channel);
-    offset += 4;
-    send_message(send_payload, offset);
-    shell_active = false;
-    remote_exec_active = false;
-    channel_open = false;
+    for (uint32_t index = 0; index < SSH_CHANNEL_LIMIT; index++) {
+        ssh_channel *channel = &channels[index];
+        if (!channel->used || channel->mode != SSH_CHANNEL_CONSOLE) continue;
+        uint32_t offset = 0;
+        send_payload[offset++] = SSH_MSG_CHANNEL_REQUEST;
+        write_u32(send_payload + offset, channel->client_channel);
+        offset += 4;
+        offset += put_string(send_payload + offset, "exit-status", 11);
+        send_payload[offset++] = 0;
+        write_u32(send_payload + offset, 0);
+        offset += 4;
+        send_message(send_payload, offset);
+        channel_send_eof_close(channel);
+        return;
+    }
 }
 
 static void write_u32(uint8_t *output, uint32_t value) {
@@ -167,6 +302,10 @@ static void write_u64(uint8_t *output, uint64_t value) {
 static uint32_t read_u32(const uint8_t *input_data) {
     return (uint32_t)input_data[0] << 24 | (uint32_t)input_data[1] << 16
          | (uint32_t)input_data[2] << 8 | input_data[3];
+}
+
+static uint64_t read_u64(const uint8_t *input_data) {
+    return (uint64_t)read_u32(input_data) << 32 | read_u32(input_data + 4);
 }
 
 static bool read_byte(const uint8_t *data, uint32_t length, uint32_t *offset,
@@ -207,37 +346,75 @@ static uint32_t put_string(uint8_t *output, const void *data, uint32_t length) {
     return length + 4;
 }
 
-static void send_channel_data(const uint8_t *data, uint32_t length) {
-    uint32_t sent = 0;
-    while (sent < length) {
-        while (remote_window == 0) {
-            network_poll();
-            cpu_pause();
+static void send_channel_data(ssh_channel *channel, const uint8_t *data,
+                              uint32_t length) {
+    if (!channel_valid(channel) || !length) return;
+    uint32_t generation = channel->generation;
+    if (channel->outbound_length) {
+        if (length > channel->outbound_capacity - channel->outbound_length) {
+            channel_close(channel, true);
+            return;
         }
+        memcpy(channel->outbound + channel->outbound_length, data, length);
+        channel->outbound_length += length;
+        return;
+    }
+    uint32_t sent = 0;
+    while (sent < length && channel_valid(channel)
+           && channel->generation == generation
+           && !channel->close_received && channel->remote_window) {
         uint32_t chunk = length - sent;
-        if (chunk > remote_window) chunk = remote_window;
+        if (chunk > channel->remote_window) chunk = channel->remote_window;
         if (chunk > SSH_MAX_PACKET - 9) chunk = SSH_MAX_PACKET - 9;
         uint32_t offset = 0;
         send_payload[offset++] = SSH_MSG_CHANNEL_DATA;
-        write_u32(send_payload + offset, client_channel);
+        write_u32(send_payload + offset, channel->client_channel);
         offset += 4;
         offset += put_string(send_payload + offset, data + sent, chunk);
         send_message(send_payload, offset);
-        remote_window -= chunk;
+        channel->remote_window -= chunk;
         sent += chunk;
     }
+    if (!channel_valid(channel) || channel->generation != generation
+        || sent == length) return;
+    uint32_t remaining = length - sent;
+    if (remaining > SSH_CHANNEL_OUTPUT_CAPACITY) {
+        channel_close(channel, true);
+        return;
+    }
+    if (!channel->outbound) {
+        channel->outbound_capacity = SSH_CHANNEL_OUTPUT_CAPACITY;
+        channel->outbound = (uint8_t *)kmalloc(channel->outbound_capacity);
+        if (!channel->outbound) {
+            channel_close(channel, true);
+            return;
+        }
+    }
+    memmove(channel->outbound, data + sent, remaining);
+    channel->outbound_length = remaining;
 }
 
-static void send_window_adjust(uint32_t amount) {
-    if (!amount) return;
+static void send_window_adjust(ssh_channel *channel, uint32_t amount) {
+    if (!channel_valid(channel) || !amount || channel->close_received) return;
     uint32_t offset = 0;
     send_payload[offset++] = SSH_MSG_CHANNEL_WINDOW_ADJUST;
-    write_u32(send_payload + offset, client_channel);
+    write_u32(send_payload + offset, channel->client_channel);
     offset += 4;
     write_u32(send_payload + offset, amount);
     offset += 4;
     send_message(send_payload, offset);
-    local_window += amount;
+    channel->local_window += amount;
+}
+
+static void channel_flush_outbound(ssh_channel *channel) {
+    if (!channel_valid(channel) || !channel->outbound_length
+        || !channel->remote_window || channel->close_received) return;
+    uint32_t generation = channel->generation;
+    uint32_t length = channel->outbound_length;
+    uint8_t *data = channel->outbound;
+    channel->outbound_length = 0;
+    send_channel_data(channel, data, length);
+    if (!channel_valid(channel) || channel->generation != generation) return;
 }
 
 static void send_raw_packet(const uint8_t *payload, uint32_t payload_length) {
@@ -251,7 +428,11 @@ static void send_raw_packet(const uint8_t *payload, uint32_t payload_length) {
     write_u32(packet_buffer, packet_length);
     packet_buffer[4] = (uint8_t)padding_length;
     memcpy(packet_buffer + 5, payload, payload_length);
-    cklos_random_bytes(packet_buffer + 5 + payload_length, padding_length);
+    if (send_encrypted) {
+        cklos_random_bytes(packet_buffer + 5 + payload_length, padding_length);
+    } else {
+        memset(packet_buffer + 5 + payload_length, 0, padding_length);
+    }
 
     uint8_t mac[32];
     uint32_t mac_length = 0;
@@ -262,9 +443,12 @@ static void send_raw_packet(const uint8_t *payload, uint32_t payload_length) {
         mac_length = 32;
         cklos_aes_ctr_crypt(&send_cipher, packet_buffer, plain_length);
     }
-    network_tcp_write(packet_buffer, plain_length);
+    if (!network_stream_write(ssh_control_stream, packet_buffer, plain_length)) {
+        console_write("SSH: transport write failed\n");
+        return;
+    }
     if (mac_length) {
-        network_tcp_write(mac, mac_length);
+        network_stream_write(ssh_control_stream, mac, mac_length);
     }
     send_sequence++;
 }
@@ -375,7 +559,7 @@ static void process_key_exchange(const uint8_t *payload, uint32_t length) {
     memcpy(session_id, exchange_hash, 32);
     uint8_t signature[64];
     cklos_ed25519_sign(host_secret, exchange_hash, 32, signature);
-    uint8_t signature_blob[80];
+    uint8_t signature_blob[96];
     uint32_t signature_length = put_string(signature_blob, "ssh-ed25519", 11);
     signature_length += put_string(signature_blob + signature_length, signature, 64);
 
@@ -508,35 +692,10 @@ static uint32_t sftp_response_length;
 static uint32_t sftp_readdir_length;
 static uint32_t sftp_readdir_count;
 static bool agent_forward_enabled;
-static bool forward_pending;
-static uint32_t forward_address;
-static uint16_t forward_port;
 
-static void forward_channel_finish(void) {
-    if (!channel_open || channel_mode != SSH_CHANNEL_FORWARD) return;
-    uint32_t offset = 0;
-    send_payload[offset++] = SSH_MSG_CHANNEL_EOF;
-    write_u32(send_payload + offset, client_channel);
-    offset += 4;
-    send_message(send_payload, offset);
-    offset = 0;
-    send_payload[offset++] = SSH_MSG_CHANNEL_CLOSE;
-    write_u32(send_payload + offset, client_channel);
-    offset += 4;
-    send_message(send_payload, offset);
-    channel_open = false;
-    channel_mode = SSH_CHANNEL_NONE;
-}
-
-static void forward_socket_event(uint8_t event, const uint8_t *data,
-                                 uint32_t length) {
-    if (!channel_open || channel_mode != SSH_CHANNEL_FORWARD) return;
-    if (event == TCP_EVENT_DATA) {
-        send_channel_data(data, length);
-    } else if (event == TCP_EVENT_DISCONNECTED) {
-        forward_channel_finish();
-    }
-}
+#define SFTP_HANDLES (sftp_channel->sftp_handles)
+#define SFTP_INPUT (sftp_channel->sftp_input)
+#define SFTP_INPUT_LENGTH (sftp_channel->sftp_input_length)
 
 static bool sftp_packet_begin(uint8_t type, uint32_t id) {
     if (SFTP_BODY_MAX < 9) return false;
@@ -549,7 +708,7 @@ static bool sftp_packet_begin(uint8_t type, uint32_t id) {
 
 static void sftp_packet_end(void) {
     write_u32(sftp_response, sftp_response_length - 4);
-    send_channel_data(sftp_response, sftp_response_length);
+    send_channel_data(sftp_channel, sftp_response, sftp_response_length);
 }
 
 static void sftp_status(uint32_t id, uint32_t code, const char *message) {
@@ -599,14 +758,14 @@ static sftp_handle *sftp_handle_by_name(ssh_string handle) {
         if (handle.data[offset] < '0' || handle.data[offset] > '9') return 0;
         index = index * 10 + handle.data[offset] - '0';
     }
-    if (index >= SFTP_HANDLE_LIMIT || !sftp_handles[index].used) return 0;
-    return &sftp_handles[index];
+    if (index >= SFTP_HANDLE_LIMIT || !SFTP_HANDLES[index].used) return 0;
+    return &SFTP_HANDLES[index];
 }
 
 static sftp_handle *sftp_handle_allocate(const char *path, bool directory) {
     for (uint32_t index = 0; index < SFTP_HANDLE_LIMIT; index++) {
-        if (!sftp_handles[index].used) {
-            sftp_handle *handle = &sftp_handles[index];
+        if (!SFTP_HANDLES[index].used) {
+            sftp_handle *handle = &SFTP_HANDLES[index];
             memset(handle, 0, sizeof(*handle));
             handle->used = true;
             handle->directory = directory;
@@ -729,7 +888,7 @@ static void sftp_process_packet(const uint8_t *packet, uint32_t length) {
                 return;
             }
             char handle_text[8];
-            uint_to_string((uint32_t)(handle - sftp_handles), handle_text, 10);
+            uint_to_string((uint32_t)(handle - SFTP_HANDLES), handle_text, 10);
             sftp_packet_begin(SFTP_HANDLE, id);
             sftp_response_length += put_string(
                 sftp_response + sftp_response_length, handle_text,
@@ -786,18 +945,23 @@ static void sftp_process_packet(const uint8_t *packet, uint32_t length) {
                 sftp_packet_end();
             }
         } else if (type == SFTP_READ) {
-            if (offset + 8 > length) {
+            if (offset + 12 > length) {
                 sftp_status(id, SFTP_STATUS_FAILURE, "bad read");
                 return;
             }
-            uint32_t read_offset = read_u32(packet + offset);
-            uint32_t count = read_u32(packet + offset + 4);
+            uint64_t read_offset = read_u64(packet + offset);
+            uint32_t count = read_u32(packet + offset + 8);
+            if (read_offset > 0xFFFFFFFFULL) {
+                sftp_status(id, SFTP_STATUS_FAILURE, "read offset too large");
+                return;
+            }
             if (count > SFTP_BODY_MAX - 13) count = SFTP_BODY_MAX - 13;
             uint32_t actual = 0;
             sftp_packet_begin(SFTP_DATA, id);
-            if (fs2_read_at(handle->path, read_offset,
-                            sftp_response + sftp_response_length + 4,
-                            count, &actual) != 0) {
+            int read_result = fs2_read_at(
+                handle->path, (uint32_t)read_offset,
+                sftp_response + sftp_response_length + 4, count, &actual);
+            if (read_result != 0) {
                 sftp_status(id, SFTP_STATUS_FAILURE, "read failed");
             } else if (!actual) {
                 sftp_status(id, SFTP_STATUS_EOF, "eof");
@@ -807,15 +971,16 @@ static void sftp_process_packet(const uint8_t *packet, uint32_t length) {
                 sftp_packet_end();
             }
         } else if (type == SFTP_WRITE) {
-            if (offset + 8 > length) {
+            if (offset + 12 > length) {
                 sftp_status(id, SFTP_STATUS_FAILURE, "bad write");
                 return;
             }
-            uint32_t write_offset = read_u32(packet + offset);
+            uint64_t write_offset = read_u64(packet + offset);
             ssh_string data;
-            offset += 4;
-            if (!read_string(packet, length, &offset, &data)
-                || fs2_write_at(handle->path, write_offset,
+            offset += 8;
+            if (write_offset > 0xFFFFFFFFULL
+                || !read_string(packet, length, &offset, &data)
+                || fs2_write_at(handle->path, (uint32_t)write_offset,
                                 data.data, data.length) != 0) {
                 sftp_status(id, SFTP_STATUS_FAILURE, "write failed");
             } else {
@@ -840,30 +1005,506 @@ static void sftp_process_packet(const uint8_t *packet, uint32_t length) {
     sftp_status(id, SFTP_STATUS_UNSUPPORTED, "unsupported operation");
 }
 
-static void sftp_receive(const uint8_t *data, uint32_t length) {
-    if (sftp_input_length + length > SSH_MAX_PACKET) return;
-    memcpy(sftp_input + sftp_input_length, data, length);
-    sftp_input_length += length;
-    while (sftp_input_length >= 4) {
-        uint32_t packet_length = sftp_input[0] << 24
-                               | sftp_input[1] << 16
-                               | sftp_input[2] << 8 | sftp_input[3];
+static void sftp_receive(ssh_channel *channel, const uint8_t *data,
+                         uint32_t length) {
+    sftp_channel = channel;
+    if (SFTP_INPUT_LENGTH + length > SSH_MAX_PACKET) return;
+    memcpy(SFTP_INPUT + SFTP_INPUT_LENGTH, data, length);
+    SFTP_INPUT_LENGTH += length;
+    while (SFTP_INPUT_LENGTH >= 4) {
+        uint32_t packet_length = SFTP_INPUT[0] << 24
+                               | SFTP_INPUT[1] << 16
+                               | SFTP_INPUT[2] << 8 | SFTP_INPUT[3];
         if (packet_length < 1 || packet_length > SSH_MAX_PACKET - 4) {
-            sftp_input_length = 0;
+            SFTP_INPUT_LENGTH = 0;
             return;
         }
-        if (sftp_input_length < packet_length + 4) return;
-        sftp_process_packet(sftp_input + 4, packet_length);
-        memmove(sftp_input, sftp_input + packet_length + 4,
-                sftp_input_length - packet_length - 4);
-        sftp_input_length -= packet_length + 4;
+        if (SFTP_INPUT_LENGTH < packet_length + 4) return;
+        sftp_process_packet(SFTP_INPUT + 4, packet_length);
+        memmove(SFTP_INPUT, SFTP_INPUT + packet_length + 4,
+                SFTP_INPUT_LENGTH - packet_length - 4);
+        SFTP_INPUT_LENGTH -= packet_length + 4;
     }
 }
 
-static void process_connection(const uint8_t *payload, uint32_t length) {
-    if (!length) {
+static void send_open_failure(uint32_t client_channel, uint32_t reason,
+                              const char *description) {
+    uint32_t out = 0;
+    send_payload[out++] = SSH_MSG_CHANNEL_OPEN_FAILURE;
+    write_u32(send_payload + out, client_channel);
+    out += 4;
+    write_u32(send_payload + out, reason);
+    out += 4;
+    out += put_string(send_payload + out, description,
+                      (uint32_t)strlen(description));
+    out += put_string(send_payload + out, "", 0);
+    send_message(send_payload, out);
+}
+
+static void send_open_confirmation(ssh_channel *channel) {
+    uint32_t out = 0;
+    send_payload[out++] = SSH_MSG_CHANNEL_OPEN_CONFIRMATION;
+    write_u32(send_payload + out, channel->client_channel);
+    out += 4;
+    write_u32(send_payload + out, channel->server_channel);
+    out += 4;
+    write_u32(send_payload + out, channel->local_window);
+    out += 4;
+    write_u32(send_payload + out, 32768);
+    out += 4;
+    send_message(send_payload, out);
+}
+
+static bool channel_queue_data(ssh_channel *channel, const uint8_t *data,
+                               uint32_t length) {
+    if (!channel_valid(channel)) return false;
+    if (!channel->pending) {
+        channel->pending_capacity = 32768;
+        channel->pending = (uint8_t *)kmalloc(channel->pending_capacity);
+        if (!channel->pending) return false;
+    }
+    if (length > channel->pending_capacity - channel->pending_length) {
+        return false;
+    }
+    memcpy(channel->pending + channel->pending_length, data, length);
+    channel->pending_length += length;
+    return true;
+}
+
+static void channel_flush_pending(ssh_channel *channel) {
+    if (!channel_valid(channel) || !channel->confirmed
+        || !channel->pending_length) return;
+    uint32_t generation = channel->generation;
+    send_channel_data(channel, channel->pending, channel->pending_length);
+    if (!channel_valid(channel) || channel->generation != generation) return;
+    channel->pending_length = 0;
+    if (channel->pending_close) {
+        channel->pending_close = false;
+        channel_close(channel, true);
+    }
+}
+
+static void forward_stream_event(int id, uint8_t event, const uint8_t *data,
+                                 uint32_t length, void *context) {
+    ssh_channel *channel = (ssh_channel *)context;
+    if (!channel_valid(channel) || channel->stream != id) return;
+    if (event == TCP_EVENT_CONNECTED) {
+        if (channel->mode == SSH_CHANNEL_DIRECT && !channel->confirmed) {
+            channel->confirmed = true;
+            send_open_confirmation(channel);
+            channel_flush_pending(channel);
+        }
+    } else if (event == TCP_EVENT_DATA) {
+        if (!channel->confirmed) {
+            if (!channel_queue_data(channel, data, length)) {
+                channel_close(channel, true);
+            }
+        } else {
+            send_channel_data(channel, data, length);
+        }
+    } else if (event == TCP_EVENT_DISCONNECTED) {
+        if (channel->confirmed) channel_close(channel, true);
+        else channel->pending_close = true;
+    }
+}
+
+static void forwarded_stream_event(int id, uint8_t event, const uint8_t *data,
+                                   uint32_t length, void *context) {
+    ssh_remote_forward *forward = (ssh_remote_forward *)context;
+    if (event == TCP_EVENT_CONNECTED || event == TCP_EVENT_DATA) {
+        ssh_channel *channel = 0;
+        for (uint32_t index = 0; index < SSH_CHANNEL_LIMIT; index++) {
+            if (channels[index].used && channels[index].stream == id
+                && channels[index].mode == SSH_CHANNEL_FORWARDED) {
+                channel = &channels[index];
+                break;
+            }
+        }
+        if (event == TCP_EVENT_CONNECTED) {
+            if (!forward || !forward->used) {
+                network_stream_close(id);
+                return;
+            }
+            channel = channel_allocate(next_server_channel++, 0);
+            if (!channel) {
+                network_stream_close(id);
+                return;
+            }
+            channel->mode = SSH_CHANNEL_FORWARDED;
+            channel->stream = id;
+            channel->confirmed = false;
+            for (uint32_t index = 0; index < REMOTE_FORWARD_LIMIT; index++) {
+                if (&remote_forwards[index] == forward) {
+                    channel->forward_index = (int)index;
+                    break;
+                }
+            }
+            uint32_t out = 0;
+            send_payload[out++] = SSH_MSG_CHANNEL_OPEN;
+            out += put_string(send_payload + out, "forwarded-tcpip", 15);
+            write_u32(send_payload + out, channel->server_channel);
+            out += 4;
+            write_u32(send_payload + out, channel->local_window);
+            out += 4;
+            write_u32(send_payload + out, 32768);
+            out += 4;
+            out += put_string(send_payload + out, forward->address,
+                              (uint32_t)strlen(forward->address));
+            write_u32(send_payload + out, forward->port);
+            out += 4;
+            out += put_string(send_payload + out, "0.0.0.0", 7);
+            write_u32(send_payload + out, 0);
+            out += 4;
+            send_message(send_payload, out);
+            return;
+        }
+        if (channel) {
+            if (!channel->confirmed) {
+                if (!channel_queue_data(channel, data, length)) {
+                    channel->pending_close = true;
+                }
+            } else {
+                send_channel_data(channel, data, length);
+            }
+        } else {
+            network_stream_close(id);
+        }
+    } else if (event == TCP_EVENT_DISCONNECTED) {
+        for (uint32_t index = 0; index < SSH_CHANNEL_LIMIT; index++) {
+            ssh_channel *channel = &channels[index];
+            if (!channel->used || channel->stream != id
+                || channel->mode != SSH_CHANNEL_FORWARDED) continue;
+            if (channel->confirmed) channel_close(channel, true);
+            else channel->pending_close = true;
+            break;
+        }
+    }
+}
+
+static void remote_forward_cancel(ssh_remote_forward *forward) {
+    if (!forward || !forward->used) return;
+    for (uint32_t index = 0; index < SSH_CHANNEL_LIMIT; index++) {
+        ssh_channel *channel = &channels[index];
+        if (channel->used && channel->mode == SSH_CHANNEL_FORWARDED
+            && &remote_forwards[channel->forward_index] == forward) {
+            channel_close(channel, true);
+        }
+    }
+    network_stream_cancel_listen(forward->listener);
+    memset(forward, 0, sizeof(*forward));
+    forward->listener = -1;
+}
+
+static void remote_forward_cancel_all(void) {
+    for (uint32_t index = 0; index < REMOTE_FORWARD_LIMIT; index++) {
+        remote_forward_cancel(&remote_forwards[index]);
+    }
+}
+
+static void request_reply(bool want_reply, bool success,
+                          uint32_t extra_value, bool include_extra) {
+    if (!want_reply) return;
+    uint32_t out = 0;
+    send_payload[out++] = success ? SSH_MSG_REQUEST_SUCCESS
+                                  : SSH_MSG_REQUEST_FAILURE;
+    if (success && include_extra) {
+        write_u32(send_payload + out, extra_value);
+        out += 4;
+    }
+    send_message(send_payload, out);
+}
+
+static void handle_global_request(const uint8_t *payload, uint32_t length,
+                                  uint32_t offset) {
+    ssh_string request;
+    uint8_t want_reply;
+    if (!read_string(payload, length, &offset, &request)
+        || !read_byte(payload, length, &offset, &want_reply)) return;
+    if (string_equals(request, "tcpip-forward")) {
+        ssh_string address;
+        if (offset + 4 > length
+            || !read_string(payload, length, &offset, &address)) {
+            request_reply(want_reply, false, 0, false);
+            return;
+        }
+        uint32_t requested_port = read_u32(payload + offset);
+        if (requested_port > 65535) {
+            request_reply(want_reply, false, 0, false);
+            return;
+        }
+        ssh_remote_forward *forward = 0;
+        for (uint32_t index = 0; index < REMOTE_FORWARD_LIMIT; index++) {
+            if (!remote_forwards[index].used) {
+                forward = &remote_forwards[index];
+                break;
+            }
+        }
+        if (!forward || address.length >= sizeof(forward->address)) {
+            request_reply(want_reply, false, 0, false);
+            return;
+        }
+        memset(forward, 0, sizeof(*forward));
+        forward->listener = -1;
+        if (address.length) {
+            memcpy(forward->address, address.data, address.length);
+            forward->address[address.length] = '\0';
+        } else {
+            strcpy(forward->address, "0.0.0.0");
+        }
+        forward->requested_port = (uint16_t)requested_port;
+        int listener = network_stream_listen((uint16_t)requested_port,
+                                             forwarded_stream_event, forward);
+        if (listener < 0) {
+            memset(forward, 0, sizeof(*forward));
+            forward->listener = -1;
+            request_reply(want_reply, false, 0, false);
+            return;
+        }
+        forward->used = true;
+        forward->listener = listener;
+        forward->port = network_stream_listener_port(listener);
+        request_reply(want_reply, true, forward->port,
+                      requested_port == 0);
         return;
     }
+    if (string_equals(request, "cancel-tcpip-forward")) {
+        ssh_string address;
+        if (offset + 4 > length
+            || !read_string(payload, length, &offset, &address)) {
+            request_reply(want_reply, false, 0, false);
+            return;
+        }
+        uint32_t port = read_u32(payload + offset);
+        bool cancelled = false;
+        for (uint32_t index = 0; index < REMOTE_FORWARD_LIMIT; index++) {
+            ssh_remote_forward *forward = &remote_forwards[index];
+            if (!forward->used || forward->port != port) continue;
+            uint32_t stored_length = (uint32_t)strlen(forward->address);
+            if (address.length == stored_length
+                && (!stored_length
+                    || memcmp(forward->address, address.data,
+                              stored_length) == 0)) {
+                remote_forward_cancel(forward);
+                cancelled = true;
+                break;
+            }
+        }
+        request_reply(want_reply, cancelled, 0, false);
+        return;
+    }
+    request_reply(want_reply, false, 0, false);
+}
+
+static void handle_channel_open(const uint8_t *payload, uint32_t length,
+                                uint32_t offset) {
+    ssh_string type;
+    if (!read_string(payload, length, &offset, &type) || offset + 12 > length) {
+        return;
+    }
+    uint32_t client_id = read_u32(payload + offset);
+    uint32_t remote_window = read_u32(payload + offset + 4);
+    offset += 12;
+    if (string_equals(type, "session")) {
+        if (!remote_window) {
+            send_open_failure(client_id, 1, "zero window");
+            return;
+        }
+        ssh_channel *channel = channel_allocate(client_id, remote_window);
+        if (!channel) {
+            send_open_failure(client_id, 4, "too many channels");
+            return;
+        }
+        channel->mode = SSH_CHANNEL_NONE;
+        channel->confirmed = true;
+        send_open_confirmation(channel);
+        return;
+    }
+    if (string_equals(type, "direct-tcpip")) {
+        ssh_string host_string;
+        if (!read_string(payload, length, &offset, &host_string)
+            || offset + 4 > length) {
+            send_open_failure(client_id, 1, "malformed direct-tcpip");
+            return;
+        }
+        char host[256];
+        if (!host_string.length || host_string.length >= sizeof(host)) {
+            send_open_failure(client_id, 1, "invalid target host");
+            return;
+        }
+        memcpy(host, host_string.data, host_string.length);
+        host[host_string.length] = '\0';
+        uint32_t requested_port = read_u32(payload + offset);
+        if (requested_port > 65535) {
+            send_open_failure(client_id, 1, "invalid target port");
+            return;
+        }
+        uint16_t port = (uint16_t)requested_port;
+        uint32_t address;
+        bool resolved = resolver_lookup_ipv4(host, &address, 4000);
+        if (!remote_window || !port || !resolved) {
+            console_printf("SSH: direct target %s:%u window %u resolved %u\n",
+                           host, port, remote_window, resolved ? 1U : 0U);
+            send_open_failure(client_id, 2, "connect failed");
+            return;
+        }
+        ssh_channel *channel = channel_allocate(client_id, remote_window);
+        if (!channel) {
+            send_open_failure(client_id, 4, "too many channels");
+            return;
+        }
+        channel->mode = SSH_CHANNEL_DIRECT;
+        int stream = network_stream_begin_open(address, port,
+                                               forward_stream_event,
+                                               channel, 5000);
+        if (stream < 0) {
+            console_printf("SSH: direct-tcpip stream open failed %d\n", stream);
+            channel_free(channel);
+            send_open_failure(client_id, 2, "connect failed");
+            return;
+        }
+        channel->stream = stream;
+        channel->confirmed = false;
+        return;
+    }
+    send_open_failure(client_id, 1, "unsupported channel");
+}
+
+static void handle_channel_open_reply(const uint8_t *payload, uint32_t length,
+                                      uint32_t offset, bool success) {
+    if (offset + 4 > length) return;
+    ssh_channel *channel = channel_lookup_server(read_u32(payload + offset));
+    if (!channel || (channel->mode != SSH_CHANNEL_FORWARDED
+                     && channel->mode != SSH_CHANNEL_AGENT)
+        || channel->confirmed) return;
+    if (!success) {
+        channel_close(channel, false);
+        return;
+    }
+    if (offset + 12 > length) {
+        channel_close(channel, false);
+        return;
+    }
+    channel->client_channel = read_u32(payload + offset + 4);
+    channel->remote_window = read_u32(payload + offset + 8);
+    channel->confirmed = true;
+    if (!channel->remote_window) {
+        channel_close(channel, true);
+        return;
+    }
+    if (channel->mode == SSH_CHANNEL_FORWARDED) channel_flush_pending(channel);
+}
+
+static void handle_channel_request(const uint8_t *payload, uint32_t length,
+                                   uint32_t offset) {
+    if (offset + 4 > length) return;
+    uint32_t recipient = read_u32(payload + offset);
+    offset += 4;
+    ssh_string request;
+    uint8_t want_reply;
+    if (!read_string(payload, length, &offset, &request)
+        || !read_byte(payload, length, &offset, &want_reply)) return;
+    ssh_channel *channel = channel_lookup_server(recipient);
+    bool accepted = false;
+    if (channel) {
+        accepted = string_equals(request, "pty-req")
+                 || string_equals(request, "shell")
+                 || string_equals(request, "exec")
+                 || string_equals(request, "subsystem")
+                 || string_equals(request, "auth-agent-req@openssh.com");
+    }
+    if (channel && string_equals(request, "subsystem")) {
+        ssh_string subsystem;
+        if (!read_string(payload, length, &offset, &subsystem)
+            || !string_equals(subsystem, "sftp")) {
+            accepted = false;
+        } else {
+            if (!channel->sftp_input) {
+                channel->sftp_input = (uint8_t *)kmalloc(SSH_MAX_PACKET);
+            }
+            if (!channel->sftp_input) {
+                accepted = false;
+            } else {
+                channel->mode = SSH_CHANNEL_SFTP;
+                channel->sftp_input_length = 0;
+                sftp_channel = channel;
+                memset(SFTP_HANDLES, 0, sizeof(SFTP_HANDLES));
+                status_text[0] = '\0';
+                strcpy(status_text, "sftp");
+            }
+        }
+    }
+    if (channel && string_equals(request, "exec")) {
+        ssh_string command;
+        if (!read_string(payload, length, &offset, &command)) {
+            accepted = false;
+        } else {
+            queue_console_bytes(command.data, command.length);
+            const uint8_t newline = '\n';
+            queue_console_bytes(&newline, 1);
+        }
+    }
+    if (channel && string_equals(request, "shell") && accepted) {
+        channel->mode = SSH_CHANNEL_CONSOLE;
+        shell_active = true;
+        status_text[0] = '\0';
+        strcpy(status_text, "authenticated shell");
+        console_write("\r\nCKLOS SSH terminal\r\n");
+        if (agent_forward_enabled) {
+            console_printf("SSH agent: %s\r\n", AGENT_SOCKET_PATH);
+        }
+    } else if (channel && string_equals(request, "exec") && accepted) {
+        channel->mode = SSH_CHANNEL_CONSOLE;
+        shell_active = true;
+        remote_exec_active = true;
+        remote_output_length = 0;
+        status_text[0] = '\0';
+        strcpy(status_text, "remote command");
+    } else if (channel && string_equals(request, "auth-agent-req@openssh.com")
+               && accepted) {
+        agent_forward_enabled = true;
+        strcpy(status_text, "agent forwarding");
+    }
+    if (want_reply) {
+        uint32_t out = 0;
+        send_payload[out++] = accepted ? SSH_MSG_CHANNEL_SUCCESS
+                                      : SSH_MSG_CHANNEL_FAILURE;
+        write_u32(send_payload + out,
+                  channel ? channel->client_channel : recipient);
+        out += 4;
+        send_message(send_payload, out);
+    }
+}
+
+static void handle_channel_data(const uint8_t *payload, uint32_t length,
+                                uint32_t offset) {
+    if (offset + 4 > length) return;
+    ssh_channel *channel = channel_lookup_server(read_u32(payload + offset));
+    offset += 4;
+    ssh_string data;
+    if (!channel || !read_string(payload, length, &offset, &data)) return;
+    if (data.length > channel->local_window) {
+        phase = SSH_PHASE_FAILED;
+        return;
+    }
+    channel->local_window -= data.length;
+    if (channel->mode == SSH_CHANNEL_SFTP) {
+        sftp_receive(channel, data.data, data.length);
+    } else if (channel->mode == SSH_CHANNEL_DIRECT
+               || channel->mode == SSH_CHANNEL_FORWARDED) {
+        if (!network_stream_write(channel->stream, data.data, data.length)) {
+            channel_close(channel, true);
+            return;
+        }
+    } else if (channel->mode == SSH_CHANNEL_AGENT) {
+        ssh_agent_receive(data.data, data.length);
+    } else {
+        queue_console_bytes(data.data, data.length);
+    }
+    send_window_adjust(channel, data.length);
+}
+
+static void process_connection(const uint8_t *payload, uint32_t length) {
+    if (!length) return;
     uint32_t offset = 1;
     if (payload[0] == SSH_MSG_SERVICE_REQUEST) {
         ssh_string service;
@@ -878,225 +1519,66 @@ static void process_connection(const uint8_t *payload, uint32_t length) {
         return;
     }
     if (payload[0] == SSH_MSG_CHANNEL_OPEN) {
-        ssh_string type;
-        if (!read_string(payload, length, &offset, &type) || offset + 12 > length) {
-            return;
-        }
-        client_channel = read_u32(payload + offset);
-        server_channel = 0;
-        remote_window = read_u32(payload + offset + 4);
-        local_window = 1024 * 1024;
-        offset += 12;
-        if (!string_equals(type, "session")
-            && !string_equals(type, "direct-tcpip")) {
-            uint32_t out = 0;
-            send_payload[out++] = SSH_MSG_CHANNEL_OPEN_FAILURE;
-            write_u32(send_payload + out, client_channel);
-            out += 4;
-            write_u32(send_payload + out, 1);
-            out += 4;
-            out += put_string(send_payload + out, "unsupported channel", 19);
-            out += put_string(send_payload + out, "", 0);
-            send_message(send_payload, out);
-            return;
-        }
-        if (string_equals(type, "direct-tcpip")) {
-            ssh_string host_string;
-            if (!read_string(payload, length, &offset, &host_string)
-                || offset + 2 > length) {
-                return;
-            }
-            char host[256];
-            if (host_string.length >= sizeof(host)) return;
-            memcpy(host, host_string.data, host_string.length);
-            host[host_string.length] = '\0';
-            uint16_t port = (uint16_t)((uint16_t)payload[offset] << 8
-                                     | payload[offset + 1]);
-            uint32_t address;
-            if (!resolver_lookup_ipv4(host, &address, 4000)
-                || !remote_window) {
-                uint32_t out = 0;
-                send_payload[out++] = SSH_MSG_CHANNEL_OPEN_FAILURE;
-                write_u32(send_payload + out, client_channel);
-                out += 4;
-                write_u32(send_payload + out, 2);
-                out += 4;
-                out += put_string(send_payload + out, "connect failed", 14);
-                out += put_string(send_payload + out, "", 0);
-                send_message(send_payload, out);
-                return;
-            }
-            channel_mode = SSH_CHANNEL_FORWARD;
-            channel_open = true;
-            uint32_t out = 0;
-            send_payload[out++] = SSH_MSG_CHANNEL_OPEN_CONFIRMATION;
-            write_u32(send_payload + out, client_channel);
-            out += 4;
-            write_u32(send_payload + out, server_channel);
-            out += 4;
-            write_u32(send_payload + out, local_window);
-            out += 4;
-            write_u32(send_payload + out, 32768);
-            out += 4;
-            send_message(send_payload, out);
-            forward_address = address;
-            forward_port = port;
-            forward_pending = true;
-            return;
-        }
-        channel_mode = SSH_CHANNEL_NONE;
-        uint32_t out = 0;
-        send_payload[out++] = SSH_MSG_CHANNEL_OPEN_CONFIRMATION;
-        write_u32(send_payload + out, client_channel);
-        out += 4;
-        write_u32(send_payload + out, server_channel);
-        out += 4;
-        write_u32(send_payload + out, local_window);
-        out += 4;
-        write_u32(send_payload + out, 32768);
-        out += 4;
-        channel_open = true;
-        send_message(send_payload, out);
+        handle_channel_open(payload, length, offset);
+        return;
+    }
+    if (payload[0] == SSH_MSG_CHANNEL_OPEN_CONFIRMATION) {
+        handle_channel_open_reply(payload, length, offset, true);
+        return;
+    }
+    if (payload[0] == SSH_MSG_CHANNEL_OPEN_FAILURE) {
+        handle_channel_open_reply(payload, length, offset, false);
         return;
     }
     if (payload[0] == SSH_MSG_CHANNEL_REQUEST) {
-        if (offset + 4 > length) {
-            return;
-        }
-        uint32_t recipient = read_u32(payload + offset);
-        offset += 4;
-        ssh_string request;
-        uint8_t want_reply;
-        if (!read_string(payload, length, &offset, &request)
-            || !read_byte(payload, length, &offset, &want_reply)) {
-            return;
-        }
-        bool accepted = string_equals(request, "pty-req")
-                     || string_equals(request, "shell")
-                     || string_equals(request, "exec")
-                     || string_equals(request, "subsystem")
-                     || string_equals(request, "auth-agent-req@openssh.com");
-        if (string_equals(request, "subsystem")) {
-            ssh_string subsystem;
-            if (!read_string(payload, length, &offset, &subsystem)
-                || !string_equals(subsystem, "sftp")) {
-                accepted = false;
-            } else {
-                channel_mode = SSH_CHANNEL_SFTP;
-                sftp_input_length = 0;
-                memset(sftp_handles, 0, sizeof(sftp_handles));
-                status_text[0] = '\0';
-                strcpy(status_text, "sftp");
-            }
-        }
-        if (string_equals(request, "exec")) {
-            ssh_string command;
-            if (!read_string(payload, length, &offset, &command)) {
-                accepted = false;
-            } else {
-                queue_console_bytes(command.data, command.length);
-                const uint8_t newline = '\n';
-                queue_console_bytes(&newline, 1);
-            }
-        }
-        if (string_equals(request, "shell") && accepted) {
-            channel_mode = SSH_CHANNEL_CONSOLE;
-            shell_active = true;
-            status_text[0] = '\0';
-            strcpy(status_text, "authenticated shell");
-            console_write("\r\nCKLOS SSH terminal\r\n");
-            if (agent_forward_enabled) {
-                console_write("SSH agent forwarding is enabled.\r\n");
-            }
-        } else if (string_equals(request, "exec") && accepted) {
-            channel_mode = SSH_CHANNEL_CONSOLE;
-            shell_active = true;
-            remote_exec_active = true;
-            remote_output_length = 0;
-            status_text[0] = '\0';
-            strcpy(status_text, "remote command");
-        } else if (string_equals(request, "auth-agent-req@openssh.com")
-                   && accepted) {
-            agent_forward_enabled = true;
-            strcpy(status_text, "agent forwarding");
-        }
-        if (want_reply) {
-            uint32_t out = 0;
-            send_payload[out++] = accepted ? SSH_MSG_CHANNEL_SUCCESS : SSH_MSG_CHANNEL_FAILURE;
-            write_u32(send_payload + out, recipient);
-            out += 4;
-            send_message(send_payload, out);
-        }
+        handle_channel_request(payload, length, offset);
         return;
     }
     if (payload[0] == SSH_MSG_CHANNEL_DATA) {
-        if (offset + 4 > length) {
-            return;
-        }
-        offset += 4;
-        ssh_string data;
-        if (!read_string(payload, length, &offset, &data)) {
-            return;
-        }
-        if (data.length > local_window) {
-            phase = SSH_PHASE_FAILED;
-            return;
-        }
-        local_window -= data.length;
-        if (channel_mode == SSH_CHANNEL_SFTP) {
-            sftp_receive(data.data, data.length);
-        } else if (channel_mode == SSH_CHANNEL_FORWARD) {
-            network_tcp_client_write(data.data, data.length);
-        } else {
-            queue_console_bytes(data.data, data.length);
-        }
-        send_window_adjust(data.length);
+        handle_channel_data(payload, length, offset);
         return;
     }
     if (payload[0] == SSH_MSG_CHANNEL_WINDOW_ADJUST) {
-        if (offset + 4 > length) return;
-        remote_window += read_u32(payload + offset);
+        if (offset + 8 > length) return;
+        ssh_channel *channel = channel_lookup_server(read_u32(payload + offset));
+        if (!channel) return;
+        channel->remote_window += read_u32(payload + offset + 4);
+        channel_flush_outbound(channel);
         return;
     }
     if (payload[0] == SSH_MSG_CHANNEL_EOF) {
-        if (channel_mode == SSH_CHANNEL_SFTP) {
-            uint32_t out = 0;
-            send_payload[out++] = SSH_MSG_CHANNEL_EOF;
-            write_u32(send_payload + out, client_channel);
-            out += 4;
-            send_message(send_payload, out);
-            out = 0;
-            send_payload[out++] = SSH_MSG_CHANNEL_CLOSE;
-            write_u32(send_payload + out, client_channel);
-            out += 4;
-            send_message(send_payload, out);
-            channel_open = false;
-            channel_mode = SSH_CHANNEL_NONE;
-        }
+        if (offset + 4 > length) return;
+        ssh_channel *channel = channel_lookup_server(read_u32(payload + offset));
+        if (!channel) return;
+        channel->eof_received = true;
+        if (channel->mode == SSH_CHANNEL_SFTP) channel_close(channel, true);
         return;
     }
     if (payload[0] == SSH_MSG_CHANNEL_CLOSE) {
-        if (channel_mode == SSH_CHANNEL_FORWARD) {
-            network_tcp_client_close();
+        if (offset + 4 > length) return;
+        ssh_channel *channel = channel_lookup_server(read_u32(payload + offset));
+        if (!channel) return;
+        channel->close_received = true;
+        bool send_close = !channel->close_sent;
+        if (send_close) {
+            uint32_t out = 0;
+            send_payload[out++] = SSH_MSG_CHANNEL_CLOSE;
+            write_u32(send_payload + out, channel->client_channel);
+            out += 4;
+            send_message(send_payload, out);
+            channel->close_sent = true;
         }
-        shell_active = false;
-        channel_open = false;
-        channel_mode = SSH_CHANNEL_NONE;
-        channel_mode = SSH_CHANNEL_NONE;
+        channel_free(channel);
         console_input_head = console_input_tail = 0;
-        strcpy(status_text, "listening");
-        send_message(payload, 5);
+        if (!shell_active) strcpy(status_text, "listening");
         return;
     }
     if (payload[0] == SSH_MSG_GLOBAL_REQUEST) {
-        uint32_t out = 0;
-        send_payload[out++] = SSH_MSG_REQUEST_FAILURE;
-        send_message(send_payload, out);
+        handle_global_request(payload, length, offset);
         return;
     }
     if (payload[0] == SSH_MSG_USERAUTH_REQUEST) {
         process_userauth(payload, length);
-        return;
     }
 }
 
@@ -1126,6 +1608,8 @@ static void process_payload(const uint8_t *payload, uint32_t length) {
             }
             break;
         case SSH_MSG_CHANNEL_OPEN:
+        case SSH_MSG_CHANNEL_OPEN_CONFIRMATION:
+        case SSH_MSG_CHANNEL_OPEN_FAILURE:
         case SSH_MSG_CHANNEL_WINDOW_ADJUST:
         case SSH_MSG_CHANNEL_REQUEST:
         case SSH_MSG_CHANNEL_DATA:
@@ -1135,6 +1619,11 @@ static void process_payload(const uint8_t *payload, uint32_t length) {
             process_connection(payload, length);
             break;
         case SSH_MSG_DISCONNECT:
+            if (ssh_control_stream >= 0) {
+                network_stream_close(ssh_control_stream);
+                ssh_control_stream = -1;
+            }
+            reset_connection_channels();
             phase = SSH_PHASE_FAILED;
             break;
         default:
@@ -1175,7 +1664,8 @@ static void process_packets(void) {
                 difference |= mac[index] ^ input[encrypted_length + index];
             }
             if (difference) {
-                console_write("SSH: MAC verification failed\n");
+                console_printf("SSH: MAC verification failed at sequence %u\n",
+                               receive_sequence);
                 phase = SSH_PHASE_FAILED;
                 return;
             }
@@ -1223,50 +1713,256 @@ static void process_version(void) {
     }
 }
 
-static void tcp_event(uint8_t event, const uint8_t *data, uint32_t length) {
+static ssh_channel *active_console_channel(void) {
+    for (uint32_t index = 0; index < SSH_CHANNEL_LIMIT; index++) {
+        if (channels[index].used
+            && channels[index].mode == SSH_CHANNEL_CONSOLE) {
+            return &channels[index];
+        }
+    }
+    return 0;
+}
+
+static void reset_connection_channels(void) {
+    remote_forward_cancel_all();
+    for (uint32_t index = 0; index < SSH_CHANNEL_LIMIT; index++) {
+        if (channels[index].used) channel_free(&channels[index]);
+    }
+    shell_active = false;
+    remote_exec_active = false;
+    remote_output_length = 0;
+    agent_forward_enabled = false;
+    agent_channel = 0;
+    agent_rx_length = 0;
+    agent_rx_eof = true;
+    console_input_head = console_input_tail = 0;
+}
+
+static void ssh_stream_event(int id, uint8_t event, const uint8_t *data,
+                             uint32_t length, void *context) {
+    (void)context;
     if (event == TCP_EVENT_CONNECTED) {
+        ssh_control_stream = id;
+        reset_connection_channels();
         phase = SSH_PHASE_VERSION;
         input_length = 0;
         send_sequence = 0;
         receive_sequence = 0;
         send_encrypted = false;
         receive_encrypted = false;
-        channel_open = false;
-        channel_mode = SSH_CHANNEL_NONE;
-        shell_active = false;
-        remote_exec_active = false;
-        remote_output_length = 0;
-        forward_pending = false;
-        client_channel = 0;
-        server_channel = 0;
-        console_input_head = console_input_tail = 0;
-        strcpy(status_text, "version exchange");
-        strcpy(server_version, SSH_SERVER_VERSION);
-        char banner[80];
-        uint32_t banner_length = (uint32_t)strlen(server_version);
-        memcpy(banner, server_version, banner_length);
-        banner[banner_length++] = '\r';
-        banner[banner_length++] = '\n';
-        network_tcp_write((const uint8_t *)banner, banner_length);
+        status_text[0] = '\0';
+        static const char banner[] = SSH_SERVER_VERSION "\r\n";
+        network_stream_write(id, (const uint8_t *)banner, sizeof(banner) - 1);
     } else if (event == TCP_EVENT_DATA) {
+        if (id != ssh_control_stream) return;
         if (input_length + length <= SSH_MAX_PACKET) {
             memcpy(input + input_length, data, length);
             input_length += length;
+            if (processing_ssh_input) return;
+            processing_ssh_input = true;
             if (phase == SSH_PHASE_VERSION) {
                 process_version();
             }
             process_packets();
+            processing_ssh_input = false;
         }
     } else if (event == TCP_EVENT_DISCONNECTED) {
-        shell_active = false;
-        remote_exec_active = false;
-        remote_output_length = 0;
-        forward_pending = false;
-        channel_open = false;
+        if (id != ssh_control_stream) return;
+        ssh_control_stream = -1;
+        reset_connection_channels();
         phase = SSH_PHASE_VERSION;
         input_length = 0;
+        processing_ssh_input = false;
         strcpy(status_text, "listening");
     }
+}
+
+bool ssh_agent_available(void) {
+    return agent_forward_enabled;
+}
+
+const char *ssh_agent_socket_path(void) {
+    return AGENT_SOCKET_PATH;
+}
+
+static void ssh_agent_poll(void) {
+    if (agent_channel && !channel_valid(agent_channel)) {
+        agent_channel = 0;
+        agent_rx_length = 0;
+        agent_rx_eof = true;
+    }
+}
+
+static void ssh_agent_receive(const uint8_t *data, uint32_t length) {
+    if (!agent_channel || !channel_valid(agent_channel)) return;
+    if (length > SSH_AGENT_RX_CAPACITY - agent_rx_length) {
+        channel_close(agent_channel, true);
+        return;
+    }
+    memcpy(agent_rx + agent_rx_length, data, length);
+    agent_rx_length += length;
+}
+
+bool ssh_agent_connect(void) {
+    ssh_agent_poll();
+    if (!agent_forward_enabled || !agent_rx) return false;
+    if (agent_channel && channel_valid(agent_channel)) return true;
+    agent_rx_length = 0;
+    agent_rx_eof = false;
+    ssh_channel *channel = channel_allocate(next_server_channel++, 0);
+    if (!channel) return false;
+    channel->mode = SSH_CHANNEL_AGENT;
+    agent_channel = channel;
+    uint32_t out = 0;
+    send_payload[out++] = SSH_MSG_CHANNEL_OPEN;
+    out += put_string(send_payload + out, "auth-agent@openssh.com", 22);
+    write_u32(send_payload + out, channel->server_channel);
+    out += 4;
+    write_u32(send_payload + out, channel->local_window);
+    out += 4;
+    write_u32(send_payload + out, 32768);
+    out += 4;
+    send_message(send_payload, out);
+    uint32_t target = timer_ticks() + SSH_AGENT_OPEN_TIMEOUT / 10;
+    while ((int32_t)(timer_ticks() - target) < 0) {
+        network_poll();
+        ssh_agent_poll();
+        if (!agent_channel) return false;
+        if (agent_channel->confirmed) return true;
+        cpu_pause();
+    }
+    ssh_agent_close();
+    console_write("SSH: agent open timed out\n");
+    return false;
+}
+
+bool ssh_agent_connect_async(void) {
+    ssh_agent_poll();
+    if (!agent_forward_enabled || !agent_rx) return false;
+    if (agent_channel && channel_valid(agent_channel)) return true;
+    agent_rx_length = 0;
+    agent_rx_eof = false;
+    ssh_channel *channel = channel_allocate(next_server_channel++, 0);
+    if (!channel) return false;
+    channel->mode = SSH_CHANNEL_AGENT;
+    agent_channel = channel;
+    uint32_t out = 0;
+    send_payload[out++] = SSH_MSG_CHANNEL_OPEN;
+    out += put_string(send_payload + out, "auth-agent@openssh.com", 22);
+    write_u32(send_payload + out, channel->server_channel);
+    out += 4;
+    write_u32(send_payload + out, channel->local_window);
+    out += 4;
+    write_u32(send_payload + out, 32768);
+    out += 4;
+    send_message(send_payload, out);
+    return true;
+}
+
+bool ssh_agent_connected(void) {
+    ssh_agent_poll();
+    return agent_channel && channel_valid(agent_channel)
+        && agent_channel->confirmed;
+}
+
+int32_t ssh_agent_read(uint8_t *data, uint32_t capacity, uint32_t timeout_ms) {
+    if (!data || !capacity) return -1;
+    uint32_t target = timer_ticks() + timeout_ms / 10;
+    for (;;) {
+        ssh_agent_poll();
+        if (agent_rx_length) {
+            uint32_t count = agent_rx_length < capacity
+                           ? agent_rx_length : capacity;
+            memcpy(data, agent_rx, count);
+            memmove(agent_rx, agent_rx + count, agent_rx_length - count);
+            agent_rx_length -= count;
+            return (int32_t)count;
+        }
+        if (!agent_channel || agent_rx_eof) return 0;
+        if (timeout_ms && (int32_t)(timer_ticks() - target) >= 0) return -1;
+        network_poll();
+        cpu_pause();
+    }
+}
+
+bool ssh_agent_readable(void) {
+    ssh_agent_poll();
+    return agent_rx_length > 0 || !agent_channel || agent_rx_eof;
+}
+
+int32_t ssh_agent_read_nonblock(uint8_t *data, uint32_t capacity) {
+    if (!data || !capacity) return -1;
+    ssh_agent_poll();
+    if (!agent_rx_length) {
+        if (!agent_channel || agent_rx_eof) return 0;
+        return -1;
+    }
+    uint32_t count = agent_rx_length < capacity ? agent_rx_length : capacity;
+    memcpy(data, agent_rx, count);
+    memmove(agent_rx, agent_rx + count, agent_rx_length - count);
+    agent_rx_length -= count;
+    return (int32_t)count;
+}
+
+bool ssh_agent_write(const uint8_t *data, uint32_t length) {
+    if (!agent_channel || !channel_valid(agent_channel)
+        || !agent_channel->confirmed || !data) {
+        return false;
+    }
+    send_channel_data(agent_channel, data, length);
+    return channel_valid(agent_channel);
+}
+
+void ssh_agent_close(void) {
+    if (agent_channel && channel_valid(agent_channel)) {
+        channel_close(agent_channel, true);
+    }
+    agent_channel = 0;
+    agent_rx_length = 0;
+    agent_rx_eof = true;
+}
+
+bool ssh_agent_request_identities(uint32_t *count) {
+    if (count) *count = 0;
+    if (!ssh_agent_connect()) return false;
+    const uint8_t request[5] = {0, 0, 0, 1, 11};
+    if (!ssh_agent_write(request, sizeof(request))) {
+        ssh_agent_close();
+        return false;
+    }
+    uint8_t frame_length[4];
+    uint32_t received = 0;
+    while (received < sizeof(frame_length)) {
+        int32_t part = ssh_agent_read(frame_length + received,
+                                      sizeof(frame_length) - received, 5000);
+        if (part <= 0) {
+            ssh_agent_close();
+            return false;
+        }
+        received += (uint32_t)part;
+    }
+    uint32_t response_length = read_u32(frame_length);
+    if (response_length < 1 || response_length > SSH_AGENT_RX_CAPACITY) {
+        ssh_agent_close();
+        return false;
+    }
+    uint8_t response[5];
+    received = 0;
+    uint32_t wanted = response_length < sizeof(response)
+                    ? response_length : sizeof(response);
+    while (received < wanted) {
+        int32_t part = ssh_agent_read(response + received,
+                                      wanted - received, 5000);
+        if (part <= 0) {
+            ssh_agent_close();
+            return false;
+        }
+        received += (uint32_t)part;
+    }
+    ssh_agent_close();
+    if (response[0] != 12 || response_length < 5) return false;
+    if (count) *count = read_u32(response + 1);
+    return true;
 }
 
 bool ssh_init(void) {
@@ -1274,35 +1970,37 @@ bool ssh_init(void) {
     send_payload = (uint8_t *)kmalloc(SSH_MAX_PACKET);
     packet_buffer = (uint8_t *)kmalloc(SSH_MAX_PACKET + 64);
     mac_buffer = (uint8_t *)kmalloc(SSH_MAX_PACKET + 4);
-    sftp_input = (uint8_t *)kmalloc(SSH_MAX_PACKET);
     sftp_response = (uint8_t *)kmalloc(SFTP_BODY_MAX);
+    channels = (ssh_channel *)kmalloc(sizeof(*channels) * SSH_CHANNEL_LIMIT);
+    agent_rx = (uint8_t *)kmalloc(SSH_AGENT_RX_CAPACITY);
     if (!input || !send_payload || !packet_buffer || !mac_buffer
-        || !sftp_input || !sftp_response) {
+        || !sftp_response || !channels || !agent_rx) {
         return false;
     }
+    agent_rx_length = 0;
+    agent_rx_eof = true;
+    memset(channels, 0, sizeof(*channels) * SSH_CHANNEL_LIMIT);
+    for (uint32_t index = 0; index < REMOTE_FORWARD_LIMIT; index++) {
+        remote_forwards[index].listener = -1;
+    }
     phase = SSH_PHASE_VERSION;
-    return network_tcp_listen(22, tcp_event);
+    ssh_control_stream = -1;
+    ssh_control_listener = network_stream_listen(22, ssh_stream_event, 0);
+    return ssh_control_listener >= 0;
 }
 
 void ssh_poll(void) {
-    if (!forward_pending || !channel_open
-        || channel_mode != SSH_CHANNEL_FORWARD) return;
-    forward_pending = false;
-    if (!network_tcp_connect(forward_address, forward_port,
-                             forward_socket_event, 5000)) {
-        forward_channel_finish();
-    }
+    ssh_agent_poll();
 }
 
 bool ssh_console_active(void) {
-    return channel_open && shell_active;
+    return active_console_channel() && shell_active;
 }
 
 void ssh_console_putc(char character) {
-    if (!ssh_console_active()) {
-        return;
-    }
-    send_channel_data((const uint8_t *)&character, 1);
+    ssh_channel *channel = active_console_channel();
+    if (!channel || !shell_active) return;
+    send_channel_data(channel, (const uint8_t *)&character, 1);
     if (remote_exec_active) {
         if (remote_output_length < sizeof(remote_output_tail) - 1) {
             remote_output_tail[remote_output_length++] = character;
@@ -1320,6 +2018,11 @@ void ssh_console_putc(char character) {
 }
 
 bool ssh_console_read(char *character) {
+    if (console_input_head >= SSH_INPUT_SIZE
+        || console_input_tail >= SSH_INPUT_SIZE) {
+        console_input_head = console_input_tail = 0;
+        return false;
+    }
     if (console_input_tail == console_input_head) {
         return false;
     }

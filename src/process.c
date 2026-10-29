@@ -2,8 +2,10 @@
 #include "fs2.h"
 #include "io.h"
 #include "memory.h"
+#include "network.h"
 #include "process.h"
 #include "rks2.h"
+#include "ssh.h"
 #include "string.h"
 #include "syscall.h"
 
@@ -13,6 +15,7 @@ extern void process_user_return(void);
 
 #define PROCESS_LIMIT 8
 #define PROCESS_PAGES 512
+#define EXCEPTION_STACK_SIZE 131072U
 #define USER_BASE 0x0000004000000000ULL
 #define USER_REGION_LIMIT 0x0000007800000000ULL
 #define MMAP_BASE 0x0000005000000000ULL
@@ -88,6 +91,7 @@ typedef struct {
 #define FILE_KIND_FS 1
 #define FILE_KIND_PIPE_READ 2
 #define FILE_KIND_PIPE_WRITE 3
+#define FILE_KIND_AGENT 4
 #define PIPE_LIMIT 4
 #define PIPE_CAPACITY 4096
 
@@ -135,7 +139,7 @@ typedef struct {
 
 static uint64_t gdt[7];
 static process_tss tss;
-static uint8_t exception_stack[32768] __attribute__((aligned(16)));
+static uint8_t *exception_stack;
 static process *processes;
 static int32_t current_process = -1;
 static int32_t next_pid = 1;
@@ -180,6 +184,8 @@ static void release_file_reference(process_file *file) {
         pipe_buffer *pipe = &pipes[file->pipe_index];
         if (pipe->writers) pipe->writers--;
         if (!pipe->readers && !pipe->writers) pipe->used = false;
+    } else if (file->kind == FILE_KIND_AGENT) {
+        ssh_agent_close();
     }
     memset(file, 0, sizeof(*file));
 }
@@ -353,6 +359,11 @@ static bool install_arguments(process *slot, int argc, const char *const *argv) 
     if (argc < 0 || argc > 32) return false;
     uint64_t top = STACK_TOP;
     uint64_t pointers[32];
+    uint64_t environment_pointer = 0;
+    const char *environment = 0;
+    if (ssh_agent_available()) {
+        environment = "SSH_AUTH_SOCK=";
+    }
     for (int index = argc - 1; index >= 0; index--) {
         uint32_t length = (uint32_t)strlen(argv[index]);
         top -= length + 1;
@@ -363,7 +374,21 @@ static bool install_arguments(process *slot, int argc, const char *const *argv) 
         }
         pointers[index] = top;
     }
-    uint64_t frame_size = (uint64_t)(argc + 4) * sizeof(uint64_t);
+    if (environment) {
+        uint32_t prefix_length = (uint32_t)strlen(environment);
+        uint32_t path_length = (uint32_t)strlen(ssh_agent_socket_path());
+        top -= prefix_length + path_length + 1;
+        if (top < STACK_TOP - USER_STACK_SIZE) return false;
+        if (!user_write_cr3(slot->cr3, (void *)(uintptr_t)top,
+                            environment, prefix_length)
+            || !user_write_cr3(slot->cr3,
+                               (void *)(uintptr_t)(top + prefix_length),
+                               ssh_agent_socket_path(), path_length + 1)) {
+            return false;
+        }
+        environment_pointer = top;
+    }
+    uint64_t frame_size = (uint64_t)(argc + 5) * sizeof(uint64_t);
     uint64_t stack = (top - frame_size) & ~0x0FULL;
     if (stack < STACK_TOP - USER_STACK_SIZE) return false;
     uint64_t zero = 0;
@@ -384,7 +409,8 @@ static bool install_arguments(process *slot, int argc, const char *const *argv) 
                         &zero, sizeof(zero))
         || !user_write_cr3(slot->cr3,
                            (void *)(uintptr_t)(stack + 8 * (argc + 2)),
-                           &zero, sizeof(zero))
+                           environment ? &environment_pointer : &zero,
+                           sizeof(zero))
         || !user_write_cr3(slot->cr3,
                            (void *)(uintptr_t)(stack + 8 * (argc + 3)),
                            &zero, sizeof(zero))) {
@@ -719,6 +745,42 @@ static int32_t open_file(process *slot, const char *path, uint32_t flags) {
     return (int32_t)slot_index_file + 3;
 }
 
+static int32_t create_agent_socket(process *slot) {
+    for (uint32_t index = 0; index < 8; index++) {
+        if (slot->files[index].used) continue;
+        process_file *file = &slot->files[index];
+        memset(file, 0, sizeof(*file));
+        file->used = true;
+        file->kind = FILE_KIND_AGENT;
+        return (int32_t)index + 3;
+    }
+    return -CKLOS_EMFILE;
+}
+
+static int32_t connect_agent_socket(process *slot, uint64_t fd,
+                                    const void *user_address,
+                                    uint32_t address_length) {
+    process_file *file = file_for(slot, fd);
+    if (!file || file->kind != FILE_KIND_AGENT) return -CKLOS_ENOTSOCK;
+    if (address_length < 3 || address_length > 110) return -CKLOS_EINVAL;
+    uint8_t address[110];
+    if (!process_user_copy(address, user_address, address_length)) {
+        return -CKLOS_EFAULT;
+    }
+    uint16_t family = (uint16_t)address[0] | (uint16_t)address[1] << 8;
+    if (family != 1) return -CKLOS_EAFNOSUPPORT;
+    char path[108];
+    uint32_t length = address_length - 2;
+    if (length >= sizeof(path)) return -CKLOS_EINVAL;
+    memcpy(path, address + 2, length);
+    path[length] = '\0';
+    if (strcmp(path, ssh_agent_socket_path()) != 0) return -CKLOS_ENOENT;
+    if (!ssh_agent_connect_async()) return -CKLOS_ECONNREFUSED;
+    strcpy(file->path, path);
+    file->writable = true;
+    return 0;
+}
+
 static int32_t flush_file(process_file *file) {
     if (!file->writable || !file->dirty) return 0;
     if (fs2_write(file->path, file->data, file->size, false) != 0) {
@@ -859,6 +921,18 @@ static int64_t sys_write(process *slot, uint64_t fd, const char *buffer, uint64_
             }
             return (int64_t)written;
         }
+        if (file->kind == FILE_KIND_AGENT) {
+            char *data = (char *)kmalloc((uint32_t)count ? (uint32_t)count : 1);
+            if (!data) return -CKLOS_ENOMEM;
+            network_poll();
+            if (!process_user_copy(data, buffer, (uint32_t)count)
+                || !ssh_agent_write((const uint8_t *)data, (uint32_t)count)) {
+                kfree(data);
+                return -CKLOS_EIO;
+            }
+            kfree(data);
+            return (int64_t)count;
+        }
         if (!file->writable) return -CKLOS_EBADF;
         if (file->offset + count > 512U * 1024U) return -CKLOS_ENOMEM;
         uint32_t needed = (uint32_t)(file->offset + count);
@@ -919,6 +993,20 @@ static int64_t sys_read(process *slot, uint64_t fd, char *buffer, uint64_t count
             copied += part;
         }
         return (int64_t)copied;
+    }
+    if (file->kind == FILE_KIND_AGENT) {
+        if (!count) return 0;
+        if (count > 65536) count = 65536;
+        uint8_t *data = (uint8_t *)kmalloc((uint32_t)count);
+        if (!data) return -CKLOS_ENOMEM;
+        network_poll();
+        int32_t actual = ssh_agent_read_nonblock(data, (uint32_t)count);
+        if (actual > 0
+            && !user_write_cr3(slot->cr3, buffer, data, (uint32_t)actual)) {
+            actual = -CKLOS_EFAULT;
+        }
+        kfree(data);
+        return actual < 0 ? -CKLOS_EAGAIN : actual;
     }
     if (file->offset >= file->size || !count) return 0;
     uint64_t available = file->size - file->offset;
@@ -1085,6 +1173,34 @@ interrupt_frame *process_syscall(interrupt_frame *frame) {
             break;
         case SYS_GETPID:
             frame->rax = (uint64_t)(uint32_t)slot->pid;
+            break;
+        case SYS_SOCKET:
+            if (frame->rdi != 1 || (frame->rsi & 0xF) != 1) {
+                frame->rax = frame->rdi != 1
+                           ? (uint64_t)-CKLOS_EAFNOSUPPORT
+                           : (uint64_t)-CKLOS_EPROTONOSUPPORT;
+            } else {
+                frame->rax = (uint64_t)create_agent_socket(slot);
+            }
+            break;
+        case SYS_CONNECT:
+            frame->rax = (uint64_t)connect_agent_socket(
+                slot, frame->rdi, (const void *)(uintptr_t)frame->rsi,
+                (uint32_t)frame->rdx);
+            break;
+        case SYS_SENDTO:
+            frame->rax = (uint64_t)sys_write(
+                slot, frame->rdi, (const char *)(uintptr_t)frame->rsi,
+                frame->rdx);
+            break;
+        case SYS_RECVFROM:
+            frame->rax = (uint64_t)sys_read(
+                slot, frame->rdi, (char *)(uintptr_t)frame->rsi, frame->rdx);
+            break;
+        case SYS_BIND:
+        case SYS_LISTEN:
+        case SYS_ACCEPT:
+            frame->rax = (uint64_t)-CKLOS_ENOSYS;
             break;
         case SYS_YIELD:
             frame->rax = 0;
@@ -1262,6 +1378,9 @@ mmap_done:
             } else if (file->kind == FILE_KIND_PIPE_WRITE) {
                 pipe_buffer *pipe = &pipes[file->pipe_index];
                 frame->rax = pipe->readers && pipe->size < PIPE_CAPACITY;
+            } else if (file->kind == FILE_KIND_AGENT) {
+                network_poll();
+                frame->rax = ssh_agent_connected();
             } else {
                 frame->rax = 1;
             }
@@ -1417,6 +1536,11 @@ void process_init(void) {
         cpu_halt();
     }
     processes = (process *)(((uintptr_t)process_storage + 15) & ~(uintptr_t)15);
+    exception_stack = (uint8_t *)kmalloc(EXCEPTION_STACK_SIZE);
+    if (!exception_stack) {
+        console_write("PROCESS: unable to allocate exception stack.\n");
+        cpu_halt();
+    }
     memset(processes, 0, sizeof(process) * PROCESS_LIMIT);
     current_process = -1;
     next_pid = 1;
@@ -1442,7 +1566,7 @@ void process_init(void) {
     set_code_descriptor(4, 0x00CFF2000000FFFFULL);
 
     memset(&tss, 0, sizeof(tss));
-    tss.rsp0 = (uint64_t)(uintptr_t)(exception_stack + sizeof(exception_stack));
+    tss.rsp0 = (uint64_t)(uintptr_t)(exception_stack + EXCEPTION_STACK_SIZE);
     tss.iomap_base = sizeof(tss);
     uint64_t base = (uint64_t)(uintptr_t)&tss;
     uint32_t limit = sizeof(tss) - 1;

@@ -21,12 +21,17 @@ fi
 python3 "$ROOT/scripts/http-test-server.py" "$ROOT/programs" \
     --port 18081 >"$ROOT/build/http-test-server.log" 2>&1 &
 HTTP_PID=$!
+dd if=/dev/urandom of="$ROOT/build/ssh-flowtest.bin" \
+    bs=1048576 count=3 2>/dev/null
+python3 "$ROOT/scripts/http-test-server.py" "$ROOT/build" \
+    --port 18083 >"$ROOT/build/flow-test-server.log" 2>&1 &
+FLOW_HTTP_PID=$!
 python3 "$ROOT/scripts/http-test-server.py" "$ROOT/programs" \
     --port 18444 --cert "$ROOT/build/test-cert.pem" \
     --key "$ROOT/build/test-key.pem" \
     >"$ROOT/build/https-test-server.log" 2>&1 &
 HTTPS_PID=$!
-trap 'kill $HTTP_PID $HTTPS_PID ${IPV6_PID:-} ${SSH_QEMU_PID:-} 2>/dev/null || true' EXIT HUP INT TERM
+trap 'kill $HTTP_PID $FLOW_HTTP_PID $HTTPS_PID ${IPV6_PID:-} ${SSH_QEMU_PID:-} 2>/dev/null || true' EXIT HUP INT TERM
 sleep 1
 
 dd if=/dev/zero of="$TEST_IMAGE" bs=512 count=2880 2>/dev/null
@@ -222,9 +227,9 @@ if [ "$status" -ne 33 ] && [ "$status" -ne 0 ]; then
 fi
 
 for expected in \
-    'CKLOS 0.15.1 kernel is running' \
+    'CKLOS 0.16.0 kernel is running' \
     'CKLOS>' \
-    'OS        CKLOS 0.15.1' \
+    'OS        CKLOS 0.16.0' \
     'PIT 100 Hz' \
     'Uptime' \
     'Heap allocator: PASS' \
@@ -301,8 +306,12 @@ done
 
 SSH_LOG="$ROOT/build/qemu-ssh-test.log"
 SSH_PORT=${SSH_TEST_PORT:-2222}
+SSH_FORWARD_HOST_PORT=18090
+SSH_FORWARD_HOST_PORT_2=18091
+SSH_REMOTE_HOST_PORT=18096
+SSH_REMOTE_GUEST_PORT=18082
 (
-    sleep 20
+    sleep 45
     printf 'shutdown\r'
     sleep 1
 ) | "$QEMU" \
@@ -312,7 +321,7 @@ SSH_PORT=${SSH_TEST_PORT:-2222}
     -boot a \
     -drive "file=$TEST_DATA_IMAGE,format=raw,if=ide,index=0" \
     -drive "file=$TEST_FS2_IMAGE,format=raw,if=ide,index=1" \
-    -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22" \
+    -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22,hostfwd=tcp:127.0.0.1:$SSH_REMOTE_HOST_PORT-:$SSH_REMOTE_GUEST_PORT" \
     -device rtl8139,netdev=net0,mac=52:54:00:12:34:56 \
     -display none -serial stdio -monitor none -no-reboot \
     -device isa-debug-exit >"$SSH_LOG" 2>&1 &
@@ -329,6 +338,73 @@ if ! ssh -i "$ROOT/keys/cklos_user" -p "$SSH_PORT" \
 fi
 grep -F 'CKLOS' "$ROOT/build/ssh-client.log" >/dev/null
 cat "$ROOT/build/ssh-client.log"
+
+ssh_cklos() {
+    ssh -i "$ROOT/keys/cklos_user" -p "$SSH_PORT" \
+        -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o BatchMode=yes -o ExitOnForwardFailure=yes "$@"
+}
+ssh_cklos -N \
+    -L "127.0.0.1:$SSH_FORWARD_HOST_PORT:10.0.2.2:18081" \
+    -L "127.0.0.1:$SSH_FORWARD_HOST_PORT_2:10.0.2.2:18081" \
+    -L "127.0.0.1:18092:10.0.2.2:18083" \
+    -R "0.0.0.0:$SSH_REMOTE_GUEST_PORT:127.0.0.1:18081" \
+    cklos@127.0.0.1 >"$ROOT/build/ssh-l.log" 2>&1 &
+SSH_L_PID=$!
+for _ in $(seq 1 30); do
+    if nc -z 127.0.0.1 "$SSH_FORWARD_HOST_PORT" 2>/dev/null \
+        && nc -z 127.0.0.1 "$SSH_FORWARD_HOST_PORT_2" 2>/dev/null; then
+        break
+    fi
+    sleep 0.2
+done
+curl --fail --silent --show-error --max-time 10 \
+    "http://127.0.0.1:$SSH_FORWARD_HOST_PORT/cck_hello.c" \
+    -o "$ROOT/build/ssh-l-1.c" &
+CURL_L_1=$!
+curl --fail --silent --show-error --max-time 10 \
+    "http://127.0.0.1:$SSH_FORWARD_HOST_PORT_2/cck_hello.c" \
+    -o "$ROOT/build/ssh-l-2.c" &
+CURL_L_2=$!
+wait "$CURL_L_1" "$CURL_L_2"
+cmp "$ROOT/build/ssh-l-1.c" "$ROOT/programs/cck_hello.c"
+cmp "$ROOT/build/ssh-l-2.c" "$ROOT/programs/cck_hello.c"
+for _ in $(seq 1 30); do
+    if nc -z 127.0.0.1 18092 2>/dev/null; then break; fi
+    sleep 0.2
+done
+curl --fail --silent --show-error --max-time 20 \
+    "http://127.0.0.1:18092/ssh-flowtest.bin" \
+    -o "$ROOT/build/ssh-flowtest-download.bin"
+cmp "$ROOT/build/ssh-flowtest.bin" "$ROOT/build/ssh-flowtest-download.bin"
+for _ in $(seq 1 30); do
+    if nc -z 127.0.0.1 "$SSH_REMOTE_HOST_PORT" 2>/dev/null; then break; fi
+    sleep 0.2
+done
+curl --fail --silent --show-error --max-time 10 \
+    "http://127.0.0.1:$SSH_REMOTE_HOST_PORT/cck_hello.c" \
+    -o "$ROOT/build/ssh-r.c"
+cmp "$ROOT/build/ssh-r.c" "$ROOT/programs/cck_hello.c"
+kill "$SSH_L_PID" 2>/dev/null || true
+wait "$SSH_L_PID" 2>/dev/null || true
+sleep 2
+
+eval "$(ssh-agent -s)" >"$ROOT/build/ssh-agent.log"
+ssh-add "$ROOT/keys/cklos_user" >>"$ROOT/build/ssh-agent.log" 2>&1
+ssh_cklos -A cklos@127.0.0.1 \
+    'elfexec /bin/USERAGENT.ELF' \
+    >"$ROOT/build/ssh-agent-user.log" 2>&1
+grep -F 'AGENT_USER: identities=1' \
+    "$ROOT/build/ssh-agent-user.log" >/dev/null
+ssh-agent -k >/dev/null 2>&1 || true
+sleep 2
+
+printf 'put %s /home/cklos/sftp-roundtrip.c\nget /home/cklos/sftp-roundtrip.c %s\nquit\n' \
+    "$ROOT/programs/cck_hello.c" "$ROOT/build/sftp-roundtrip.c" | \
+    sftp -b - -i "$ROOT/keys/cklos_user" -P "$SSH_PORT" \
+        -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        cklos@127.0.0.1 >"$ROOT/build/sftp-client.log" 2>&1
+cmp "$ROOT/programs/cck_hello.c" "$ROOT/build/sftp-roundtrip.c"
 wait "$SSH_QEMU_PID" 2>/dev/null || true
 
 python3 "$ROOT/scripts/ipv6-test-peer.py" \
