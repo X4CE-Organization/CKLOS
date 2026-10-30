@@ -2,6 +2,15 @@
 
 All notable changes to CKLOS are documented here.
 
+## 0.16.1 — 2026-10-30
+
+### Fixed
+
+- IPv4 routing now sends off-subnet traffic to the gateway MAC address while
+  preserving the public destination address in the IP header.
+- Public HTTP and HTTPS now work through QEMU user networking. DNS and ARP
+  remain direct for the local `10.0.2.0/24` subnet.
+
 ## 0.16.0 — 2026-10-29
 
 ### Added

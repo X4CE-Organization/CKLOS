@@ -227,9 +227,9 @@ if [ "$status" -ne 33 ] && [ "$status" -ne 0 ]; then
 fi
 
 for expected in \
-    'CKLOS 0.16.0 kernel is running' \
+    'CKLOS 0.16.1 kernel is running' \
     'CKLOS>' \
-    'OS        CKLOS 0.16.0' \
+    'OS        CKLOS 0.16.1' \
     'PIT 100 Hz' \
     'Uptime' \
     'Heap allocator: PASS' \

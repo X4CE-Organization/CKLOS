@@ -325,6 +325,11 @@ static bool arp_cache_lookup(uint32_t address, uint8_t *mac) {
     return false;
 }
 
+static uint32_t ipv4_next_hop(uint32_t address) {
+    return (address & 0xFFFFFF00U) == (local_ip & 0xFFFFFF00U)
+         ? address : gateway_ip;
+}
+
 static void send_arp_request(uint32_t target_ip) {
     memset(packet_buffer, 0, ETH_HEADER_SIZE + ARP_PACKET_SIZE);
     memset(packet_buffer, 0xFF, 6);
@@ -1252,17 +1257,18 @@ void network_poll(void) {
 }
 
 bool network_arp_resolve(uint32_t address, uint8_t *mac, uint32_t timeout_ms) {
-    if (arp_cache_lookup(address, mac)) {
+    uint32_t next_hop = ipv4_next_hop(address);
+    if (arp_cache_lookup(next_hop, mac)) {
         return true;
     }
     if (!available) {
         return false;
     }
-    send_arp_request(address);
+    send_arp_request(next_hop);
     uint32_t target = timer_ticks() + timeout_ms / 10;
     while ((int32_t)(timer_ticks() - target) < 0) {
         network_poll();
-        if (arp_cache_lookup(address, mac)) {
+        if (arp_cache_lookup(next_hop, mac)) {
             return true;
         }
         cpu_pause();
