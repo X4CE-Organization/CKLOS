@@ -58,8 +58,7 @@ static bool extension_is(const char *name, const char *extension) {
 }
 
 static bool is_executable_name(const char *name) {
-    return extension_is(name, ".rks") || extension_is(name, ".exe")
-        || extension_is(name, ".elf");
+    return extension_is(name, ".rks") || extension_is(name, ".elf");
 }
 
 static uint8_t bcd_to_binary(uint8_t value) {

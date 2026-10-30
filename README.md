@@ -158,10 +158,9 @@ CKLOS> ./HELLO.RKS
 Hello from HELLO.RKS.
 ```
 
-`.rks`、`.exe` 和 `.elf` 可执行文件都可以直接输入文件名、`./文件名` 或
-CKLOSFS2 路径运行。直接执行只保留程序自身的输出，不再打印装载地址、进程
-启动/退出等加载器信息。文件名包含空格时也可以直接输入完整名称，例如
-`win 1.exe`。
+`.rks` 和 `.elf` 可执行文件都可以直接输入文件名、`./文件名` 或 CKLOSFS2
+路径运行。直接执行只保留程序自身的输出，不再打印装载地址、进程启动/退出
+等加载器信息。
 
 示例源码位于 `programs/hello.c`，ABI 在 `programs/rks_api.h`。`RKS1` 是兼容的旧式 ring-0 程序格式，只用于现有演示。新的隔离程序使用 `ELFEXEC`，运行在 ring 3；示例包括 `USERHELLO.ELF`、`USERFORK.ELF`、`USERFAULT.ELF`、`USEREXEC.ELF`、`USERIO.ELF`、`USERPIPE.ELF`、`USERAGENT.ELF` 和链接 musl 的 `MUSLHELLO.ELF`。
 

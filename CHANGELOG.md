@@ -6,8 +6,8 @@ All notable changes to CKLOS are documented here.
 
 ### Added
 
-- RKS1, RKS2, ELF64 and `.exe` programs can be launched directly by filename,
-  with or without a leading `./`, including filenames containing spaces.
+- RKS1, RKS2 and ELF64 programs can be launched directly by filename, with or
+  without a leading `./`.
 - CKI has a clickable `NEW` action and `Ctrl+N` file creation.
 
 ### Fixed
