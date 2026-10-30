@@ -1471,7 +1471,8 @@ interrupt_frame *process_timer(interrupt_frame *frame) {
     return schedule(frame);
 }
 
-int process_run_elf_args(const char *path, int argc, const char *const *argv) {
+static int process_run_elf_args_mode(const char *path, int argc,
+                                     const char *const *argv, bool quiet) {
     if (current_process >= 0) return -1;
     process *slot = create_from_elf(path, 0);
     if (!slot) {
@@ -1490,11 +1491,15 @@ int process_run_elf_args(const char *path, int argc, const char *const *argv) {
     restore_fx(slot);
     set_fs_base(slot->fs_base);
     write_cr3(slot->cr3);
-    console_printf("PROCESS: pid %d started %s in ring 3.\n", slot->pid, path);
+    if (!quiet) {
+        console_printf("PROCESS: pid %d started %s in ring 3.\n", slot->pid, path);
+    }
     process_enter_user(slot->entry, slot->stack_pointer);
     if (current_process >= 0) write_cr3(kernel_cr3);
     current_process = -1;
-    console_printf("PROCESS: returned to kernel (exit %d).\n", last_exit);
+    if (!quiet) {
+        console_printf("PROCESS: returned to kernel (exit %d).\n", last_exit);
+    }
     for (uint32_t index = 0; index < PROCESS_LIMIT; index++) {
         if (processes[index].state == PROCESS_ZOMBIE
             || processes[index].state == PROCESS_READY
@@ -1506,9 +1511,23 @@ int process_run_elf_args(const char *path, int argc, const char *const *argv) {
     return last_exit;
 }
 
+int process_run_elf_args(const char *path, int argc, const char *const *argv) {
+    return process_run_elf_args_mode(path, argc, argv, false);
+}
+
+int process_run_elf_args_quiet(const char *path, int argc,
+                               const char *const *argv) {
+    return process_run_elf_args_mode(path, argc, argv, true);
+}
+
 int process_run_elf(const char *path) {
     const char *argv[1] = { path };
     return process_run_elf_args(path, 1, argv);
+}
+
+int process_run_elf_quiet(const char *path) {
+    const char *argv[1] = { path };
+    return process_run_elf_args_quiet(path, 1, argv);
 }
 
 uint32_t process_count(void) {

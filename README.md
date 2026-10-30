@@ -38,7 +38,7 @@ BIOS -> CKLOS 两阶段引导器 -> x86-64 长模式 -> C 内核 -> CKLOS GUI
 - CMOS 实时时钟、CPU 信息、内存布局和设备诊断
 - 整数计算、十六进制查看、颜色主题和 PC 扬声器测试
 
-这是 CKLOS 0.16.1 的开源 x86-64 图形内核版本。它已经有长模式、分页、任务切换、两级持久化存储、ELF64 用户态隔离、静态 musl libc、系统内 C 编译器、VBE 高分辨率图形、UTF-8 编辑器、IPv4/IPv6 TCP、DNS、HTTP、TLS、SSH/SFTP、双向端口转发和 Agent 转发。0.13.0 同时提供 Clang/LLVM 与 GCC 的 C++ 前端独立评估，但尚未提供 C++ 编译器。系统还不是 Linux 那样的完整通用操作系统：USB、完整桌面、多客户端 SSH 和更完整的 curl/wget 兼容性尚未完成。
+这是 CKLOS 0.17.0 的开源 x86-64 图形内核版本。它已经有长模式、分页、任务切换、两级持久化存储、ELF64 用户态隔离、静态 musl libc、系统内 C 编译器、VBE 高分辨率图形、UTF-8 编辑器、IPv4/IPv6 TCP、DNS、HTTP、TLS、SSH/SFTP、双向端口转发和 Agent 转发。0.13.0 同时提供 Clang/LLVM 与 GCC 的 C++ 前端独立评估，但尚未提供 C++ 编译器。系统还不是 Linux 那样的完整通用操作系统：USB、完整桌面、多客户端 SSH 和更完整的 curl/wget 兼容性尚未完成。
 
 ## 安装依赖
 
@@ -128,10 +128,11 @@ make test
 | `run DEMO.CKL` | 执行内置演示脚本 |
 | `run FILE.CKL` | 执行用户命令脚本，支持最多四层嵌套 |
 | `exec HELLO.RKS` | 校验并执行 RKS1 可执行文件 |
+| `HELLO.RKS` / `./app.rks` | 直接按文件名执行 RKS，不显示加载器附加信息 |
 | `elfexec FILE.ELF` | 在 ring 3 装载并执行静态 ELF64 程序 |
 | `procs` | 显示活动进程数和当前 PID |
 | `cck FILE.c` | 使用 TinyCC 后端编译静态 ELF64，并默认生成 `a.rks` |
-| `cki FILE` | 打开支持中文、鼠标定位、查找、保存和撤销的全屏编辑器 |
+| `cki FILE` | 打开全屏编辑器；相对名称保存到 `/home/cklos`，支持 `NEW`/`Ctrl+N` |
 | `dns HOST` | 查询 A 和 AAAA 记录 |
 | `cwgt URL` | 下载 HTTP/HTTPS 内容，支持重定向、POST、请求头和断点续传 |
 | `curl URL` | 支持 GET/HEAD/自定义方法、输出、认证、Cookie、Range 和重定向 |
@@ -151,9 +152,16 @@ make test
 ```text
 CKLOS> ls
 HELLO.RKS  313 bytes  [RW]
-CKLOS> exec HELLO.RKS
-RKS executable is running!
+CKLOS> HELLO.RKS
+Hello from HELLO.RKS.
+CKLOS> ./HELLO.RKS
+Hello from HELLO.RKS.
 ```
+
+`.rks`、`.exe` 和 `.elf` 可执行文件都可以直接输入文件名、`./文件名` 或
+CKLOSFS2 路径运行。直接执行只保留程序自身的输出，不再打印装载地址、进程
+启动/退出等加载器信息。文件名包含空格时也可以直接输入完整名称，例如
+`win 1.exe`。
 
 示例源码位于 `programs/hello.c`，ABI 在 `programs/rks_api.h`。`RKS1` 是兼容的旧式 ring-0 程序格式，只用于现有演示。新的隔离程序使用 `ELFEXEC`，运行在 ring 3；示例包括 `USERHELLO.ELF`、`USERFORK.ELF`、`USERFAULT.ELF`、`USEREXEC.ELF`、`USERIO.ELF`、`USERPIPE.ELF`、`USERAGENT.ELF` 和链接 musl 的 `MUSLHELLO.ELF`。
 

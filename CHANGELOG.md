@@ -2,6 +2,23 @@
 
 All notable changes to CKLOS are documented here.
 
+## 0.17.0 — 2026-10-30
+
+### Added
+
+- RKS1, RKS2, ELF64 and `.exe` programs can be launched directly by filename,
+  with or without a leading `./`, including filenames containing spaces.
+- CKI has a clickable `NEW` action and `Ctrl+N` file creation.
+
+### Fixed
+
+- Direct executable launch suppresses loader and ring-3 process lifecycle
+  messages, leaving only the program's own output.
+- Relative CKI filenames resolve to `/home/cklos`, and successful saves print
+  the canonical path and byte count back to the shell.
+- CKI save/open status text is bounded instead of copying full paths into a
+  fixed-size buffer.
+
 ## 0.16.1 — 2026-10-30
 
 ### Fixed

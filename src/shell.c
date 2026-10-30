@@ -25,8 +25,10 @@
 #define LINE_SIZE 256
 #define MAX_ARGS 32
 #define HISTORY_MAX 16
+#define CKI_PATH_MAX 4096
 
 static char line[LINE_SIZE];
+static char direct_command_name[LINE_SIZE];
 static char *arguments[MAX_ARGS];
 static char history[HISTORY_MAX][LINE_SIZE];
 static uint32_t history_count;
@@ -39,6 +41,26 @@ static void normalize_command(char *command);
 static int split_arguments(char *command);
 static void join_arguments(int first, int argc, char *output, uint32_t capacity);
 static void run_command(int argc);
+
+static bool extension_is(const char *name, const char *extension) {
+    uint32_t name_length = (uint32_t)strlen(name);
+    uint32_t extension_length = (uint32_t)strlen(extension);
+    if (name_length <= extension_length) return false;
+    const char *suffix = name + name_length - extension_length;
+    for (uint32_t index = 0; index < extension_length; index++) {
+        char character = suffix[index];
+        if (character >= 'A' && character <= 'Z') {
+            character = (char)(character - 'A' + 'a');
+        }
+        if (character != extension[index]) return false;
+    }
+    return true;
+}
+
+static bool is_executable_name(const char *name) {
+    return extension_is(name, ".rks") || extension_is(name, ".exe")
+        || extension_is(name, ".elf");
+}
 
 static uint8_t bcd_to_binary(uint8_t value) {
     return (uint8_t)((value & 0x0F) + ((value >> 4) * 10));
@@ -141,6 +163,7 @@ static void command_help(void) {
         "  DISKLOAD          Reload saved user files from the ATA disk\n"
         "  RUN FILE.CKL      Execute a text command script\n"
         "  EXEC FILE.RKS     Load and execute an RKS binary\n"
+        "  FILE.RKS / ./FILE Run an RKS executable directly\n"
         "  ELFEXEC FILE.ELF  Run a static ELF64 program in ring 3\n"
         "  PROCS             Show isolated process count and current PID\n"
         "  CCK ARGS          Run the native TinyCC-based C compiler\n"
@@ -898,6 +921,7 @@ static void command_run(int argc) {
         if (*cursor && *cursor != '#') {
             int count = split_arguments(cursor);
             if (count) {
+                strcpy(direct_command_name, arguments[0]);
                 normalize_command(arguments[0]);
                 run_command(count);
             }
@@ -928,6 +952,67 @@ static void command_elfexec(int argc) {
     process_run_elf(arguments[1]);
 }
 
+static bool run_executable_path(const char *path) {
+    const char *base = path;
+    while (base[0] == '.' && base[1] == '/') base += 2;
+    const virtual_file *file = vfs_find(base);
+    if (file) {
+        rks_run(base);
+        return true;
+    }
+    uint32_t size;
+    uint8_t type;
+    if (fs2_stat(path, &size, &type) == 0 && type == FS2_TYPE_FILE) {
+        process_run_elf_quiet(path);
+        return true;
+    }
+    if (base != path && fs2_stat(base, &size, &type) == 0
+        && type == FS2_TYPE_FILE) {
+        process_run_elf_quiet(base);
+        return true;
+    }
+    if (path[0] != '/') {
+        static const char home_prefix[] = "/home/cklos/";
+        char home_path[CKI_PATH_MAX];
+        uint32_t prefix_length = (uint32_t)(sizeof(home_prefix) - 1);
+        uint32_t base_length = (uint32_t)strlen(base);
+        if (prefix_length + base_length + 1 <= sizeof(home_path)) {
+            memcpy(home_path, home_prefix, prefix_length);
+            memcpy(home_path + prefix_length, base, base_length + 1);
+            if (fs2_stat(home_path, &size, &type) == 0
+                && type == FS2_TYPE_FILE) {
+                process_run_elf_quiet(home_path);
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+static bool try_run_executable(int argc) {
+    const char *first = direct_command_name[0]
+                      ? direct_command_name : arguments[0];
+    if (is_executable_name(first) && run_executable_path(first)) return true;
+    if (argc <= 1) return false;
+
+    char candidate[LINE_SIZE];
+    uint32_t length = 0;
+    while (first[length] && length + 1 < sizeof(candidate)) {
+        candidate[length] = first[length];
+        length++;
+    }
+    for (int index = 1; index < argc; index++) {
+        if (length + 1 >= sizeof(candidate)) return false;
+        candidate[length++] = ' ';
+        const char *part = arguments[index];
+        while (*part && length + 1 < sizeof(candidate)) {
+            candidate[length++] = *part++;
+        }
+    }
+    candidate[length] = '\0';
+    return is_executable_name(candidate) && run_executable_path(candidate);
+}
+
 static void command_processes(void) {
     console_printf("Processes %u  Current PID %u\n",
                    process_count(), process_current_pid());
@@ -938,11 +1023,27 @@ static void command_cki(int argc) {
         console_write("Usage: CKI FILE\n");
         return;
     }
+    char path[CKI_PATH_MAX];
+    const char *prefix = arguments[1][0] == '/' ? "" : "/home/cklos/";
+    uint32_t prefix_length = (uint32_t)strlen(prefix);
+    uint32_t path_length = (uint32_t)strlen(arguments[1]);
+    if (prefix_length + path_length + 1 > sizeof(path)) {
+        console_write("CKI: path is too long.\n");
+        return;
+    }
+    memcpy(path, prefix, prefix_length);
+    memcpy(path + prefix_length, arguments[1], path_length + 1);
     input_set_device_polling(true);
-    bool opened = editor_open(arguments[1], true);
+    bool opened = editor_open(path, true);
     input_set_device_polling(false);
     if (!opened) {
         console_write("CKI: cannot open file.\n");
+        return;
+    }
+    char saved_path[CKI_PATH_MAX];
+    uint32_t saved_size;
+    if (editor_last_saved(saved_path, sizeof(saved_path), &saved_size)) {
+        console_printf("CKI: saved %s (%u bytes).\n", saved_path, saved_size);
     }
 }
 
@@ -1333,7 +1434,7 @@ static void command_dns(int argc) {
 
 static void command_rks(void) {
     console_printf("RKS1 executable runtime\nInstalled images: %u\n"
-                   "Example: EXEC HELLO.RKS\n",
+                   "Example: ./HELLO.RKS\n",
                    rks_installed_count());
 }
 
@@ -1846,6 +1947,8 @@ static void run_command(int argc) {
     } else if (strcmp(arguments[0], "halt") == 0) {
         console_write("CPU halted.\n");
         cpu_halt();
+    } else if (try_run_executable(argc)) {
+        return;
     } else {
         console_printf("CKLOS: %s: command not found. Type HELP.\n", arguments[0]);
     }
@@ -1972,6 +2075,7 @@ void shell_start(void) {
         strcpy(command, line);
         int count = split_arguments(command);
         if (count) {
+            strcpy(direct_command_name, arguments[0]);
             normalize_command(arguments[0]);
         }
         run_command(count);

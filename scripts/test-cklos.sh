@@ -70,6 +70,10 @@ set +e
     sleep 0.5
     printf 'exec HELLO.RKS\r'
     sleep 0.5
+    printf 'HELLO.RKS\r'
+    sleep 0.5
+    printf './HELLO.RKS\r'
+    sleep 0.5
     printf 'cp MOTD.TXT COPY.TXT\r'
     sleep 0.2
     printf 'wc COPY.TXT\r'
@@ -196,7 +200,7 @@ set +e
     sleep 0.2
     printf 'cck /home/cklos/cck_hello.c\r'
     sleep 12
-    printf 'elfexec /a.rks\r'
+    printf './a.rks\r'
     sleep 4
     printf 'fscat /home/cklos/user-io.txt\r'
     sleep 0.2
@@ -227,9 +231,9 @@ if [ "$status" -ne 33 ] && [ "$status" -ne 0 ]; then
 fi
 
 for expected in \
-    'CKLOS 0.16.1 kernel is running' \
+    'CKLOS 0.17.0 kernel is running' \
     'CKLOS>' \
-    'OS        CKLOS 0.16.1' \
+    'OS        CKLOS 0.17.0' \
     'PIT 100 Hz' \
     'Uptime' \
     'Heap allocator: PASS' \
@@ -238,8 +242,7 @@ for expected in \
     'worker-' \
     'Running DEMO.CKL' \
     'CKLOS script engine is active.' \
-    'RKS executable is running!' \
-    'RKS programs are standalone binaries loaded at runtime.' \
+    'Hello from HELLO.RKS.' \
     'Copied MOTD.TXT to COPY.TXT' \
     '3 lines  18 words  120 bytes  COPY.TXT' \
     'A compact command-line operating system built from scratch.' \
@@ -470,6 +473,20 @@ set +e
     sleep 2
     printf 'fscat /home/cklos/cki-interactive.txt\r'
     sleep 0.3
+    printf 'cki /home/cklos/cki-base.txt\r'
+    sleep 2
+    printf '\016'
+    sleep 0.5
+    printf '/home/cklos/cki-created.txt\r'
+    sleep 0.5
+    printf 'created in cki\r'
+    sleep 1
+    printf '\023'
+    sleep 1
+    printf '\021'
+    sleep 2
+    printf 'fscat /home/cklos/cki-created.txt\r'
+    sleep 0.3
     printf 'disk\r'
     sleep 0.3
     printf 'cat PERSIST.TXT\r'
@@ -517,6 +534,8 @@ for expected in \
     '你好 CKLOS' \
     'renamed.bin  32768 bytes' \
     '你好' \
+    'CKI: saved /home/cklos/cki-created.txt (15 bytes).' \
+    'created in cki' \
     '你好 CKLOS editor'
 do
     if ! grep -F "$expected" "$PERSIST_LOG" >/dev/null; then

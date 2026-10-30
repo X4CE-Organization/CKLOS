@@ -107,11 +107,8 @@ int rks_run(const char *name) {
 
     uint8_t *image = (uint8_t *)(uintptr_t)RKS_LOAD_BASE;
     memcpy(image, payload, header->code_size);
-    console_printf("RKS: loading %s, %u bytes, entry 0x%08x\n",
-                   file->name, header->code_size, header->entry);
     int (*entry)(const rks_api *) =
         (int (*)(const rks_api *))(uintptr_t)(RKS_LOAD_BASE + header->entry);
     int result = entry(&api);
-    console_printf("RKS: %s exited with code %d.\n", file->name, result);
     return result;
 }

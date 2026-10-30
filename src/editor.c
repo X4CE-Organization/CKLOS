@@ -32,6 +32,21 @@ typedef struct {
     bool undo_valid;
 } editor_state;
 
+static char last_saved_path[EDITOR_PATH_MAX];
+static uint32_t last_saved_size;
+static bool last_save_valid;
+
+static bool resolve_user_path(const char *path, char *output,
+                              uint32_t capacity) {
+    const char *prefix = path[0] == '/' ? "" : "/home/cklos/";
+    uint32_t prefix_length = (uint32_t)strlen(prefix);
+    uint32_t path_length = (uint32_t)strlen(path);
+    if (prefix_length + path_length + 1 > capacity) return false;
+    if (prefix_length) memcpy(output, prefix, prefix_length);
+    memcpy(output + prefix_length, path, path_length + 1);
+    return true;
+}
+
 static uint32_t line_start(const editor_state *editor, uint32_t cursor) {
     if (cursor > editor->size) cursor = editor->size;
     while (cursor && editor->text[cursor - 1] != '\n') cursor--;
@@ -201,11 +216,27 @@ static bool load_file(editor_state *editor, const char *path, bool create) {
     return true;
 }
 
+static void set_status_path(editor_state *editor, const char *prefix,
+                            const char *path) {
+    uint32_t length = 0;
+    while (prefix[length] && length + 1 < sizeof(editor->status)) {
+        editor->status[length] = prefix[length];
+        length++;
+    }
+    uint32_t index = 0;
+    while (path[index] && length + 1 < sizeof(editor->status)) {
+        editor->status[length++] = path[index++];
+    }
+    editor->status[length] = '\0';
+}
+
 static void save_file(editor_state *editor) {
     if (fs2_write(editor->path, editor->text, editor->size, false) == 0) {
         editor->modified = false;
-        strcpy(editor->status, "Saved ");
-        strcpy(editor->status + 6, editor->path);
+        last_save_valid = true;
+        last_saved_size = editor->size;
+        strcpy(last_saved_path, editor->path);
+        set_status_path(editor, "Saved ", editor->path);
     } else {
         strcpy(editor->status, "Save failed");
     }
@@ -241,9 +272,9 @@ static void draw_editor(editor_state *editor) {
 
     gui_fill_rect(0, 32, width, 36, 8);
     uint32_t button_x = 12;
-    const char *labels[4] = {"SAVE", "OPEN", "FIND", "UNDO"};
-    const uint8_t colors[4] = {10, 11, 1, 9};
-    for (uint32_t index = 0; index < 4; index++) {
+    const char *labels[5] = {"SAVE", "OPEN", "NEW", "FIND", "UNDO"};
+    const uint8_t colors[5] = {10, 11, 14, 1, 9};
+    for (uint32_t index = 0; index < 5; index++) {
         gui_fill_rect(button_x, 38, 64, 22, colors[index]);
         gui_draw_text(button_x + 12, 42, labels[index], 0, 0xFF);
         button_x += 74;
@@ -312,13 +343,14 @@ static void ensure_cursor_visible(editor_state *editor) {
     }
 }
 
-static void prompt_path(editor_state *editor) {
+static void prompt_path(editor_state *editor, bool create) {
     char path[EDITOR_PATH_MAX];
     uint32_t length = 0;
     path[0] = '\0';
     while (1) {
         gui_fill_rect(0, gui_height() - 44, gui_width(), 24, 11);
-        gui_draw_text(10, gui_height() - 38, "Open: ", 0, 0xFF);
+        gui_draw_text(10, gui_height() - 38, create ? "New: " : "Open: ",
+                      0, 0xFF);
         gui_draw_text(58, gui_height() - 38, path, 0, 0xFF);
         uint16_t key = input_getchar();
         if (key == '\n') break;
@@ -332,11 +364,12 @@ static void prompt_path(editor_state *editor) {
         }
     }
     if (length) {
-        if (load_file(editor, path, false)) {
-            strcpy(editor->status, "Opened ");
-            strcpy(editor->status + 7, path);
+        char resolved[EDITOR_PATH_MAX];
+        if (resolve_user_path(path, resolved, sizeof(resolved))
+            && load_file(editor, resolved, create)) {
+            set_status_path(editor, create ? "New " : "Opened ", resolved);
         } else {
-            strcpy(editor->status, "Open failed");
+            strcpy(editor->status, create ? "New file failed" : "Open failed");
         }
     }
 }
@@ -374,6 +407,9 @@ static void find_text(editor_state *editor) {
 }
 
 bool editor_open(const char *path, bool create) {
+    last_save_valid = false;
+    last_saved_size = 0;
+    last_saved_path[0] = '\0';
     editor_state *editor =
         (editor_state *)kmalloc(sizeof(editor_state));
     if (!editor) return false;
@@ -415,14 +451,18 @@ bool editor_open(const char *path, bool create) {
                 continue;
             }
             if (click_x >= 86 && click_x < 150) {
-                prompt_path(editor);
+                prompt_path(editor, false);
                 continue;
             }
             if (click_x >= 160 && click_x < 224) {
-                find_text(editor);
+                prompt_path(editor, true);
                 continue;
             }
             if (click_x >= 234 && click_x < 298) {
+                find_text(editor);
+                continue;
+            }
+            if (click_x >= 308 && click_x < 372) {
                 undo(editor);
                 continue;
             }
@@ -451,7 +491,9 @@ bool editor_open(const char *path, bool create) {
         if (key == 19) {
             save_file(editor);
         } else if (key == 15) {
-            prompt_path(editor);
+            prompt_path(editor, false);
+        } else if (key == 14) {
+            prompt_path(editor, true);
         } else if (key == 6) {
             find_text(editor);
         } else if (key == 26) {
@@ -503,5 +545,14 @@ bool editor_open(const char *path, bool create) {
     kfree(editor);
     gui_set_editor_mode(false);
     gui_init();
+    return true;
+}
+
+bool editor_last_saved(char *path, uint32_t capacity, uint32_t *size) {
+    if (!last_save_valid || !path || !capacity) return false;
+    uint32_t length = (uint32_t)strlen(last_saved_path);
+    if (length + 1 > capacity) return false;
+    memcpy(path, last_saved_path, length + 1);
+    if (size) *size = last_saved_size;
     return true;
 }
