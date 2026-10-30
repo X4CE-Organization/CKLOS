@@ -2,6 +2,15 @@
 
 All notable changes to CKLOS are documented here.
 
+## 0.17.1 — 2026-10-30
+
+### Fixed
+
+- CKLOSFS2 now starts in `/home/cklos` when that directory exists, so files
+  saved by CKI work immediately with relative `fscat`, `cck` and executable
+  paths.
+- `ls` now lists both the legacy RAM disk and the current CKLOSFS2 directory.
+
 ## 0.17.0 — 2026-10-30
 
 ### Added

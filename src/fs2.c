@@ -264,6 +264,15 @@ bool fs2_init(void) {
         return false;
     }
     mounted = lfs_mount(&filesystem, &configuration) == LFS_ERR_OK;
+    if (mounted) {
+        struct lfs_info home;
+        if (lfs_stat(&filesystem, "/home/cklos", &home) == LFS_ERR_OK
+            && home.type == LFS_TYPE_DIR) {
+            strcpy(current_directory, "/home/cklos");
+        } else {
+            strcpy(current_directory, "/");
+        }
+    }
     return mounted;
 }
 

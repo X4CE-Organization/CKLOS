@@ -41,6 +41,7 @@ static void normalize_command(char *command);
 static int split_arguments(char *command);
 static void join_arguments(int first, int argc, char *output, uint32_t capacity);
 static void run_command(int argc);
+static void fs2_list_item(const char *name, uint32_t size, uint8_t type);
 
 static bool extension_is(const char *name, const char *extension) {
     uint32_t name_length = (uint32_t)strlen(name);
@@ -691,7 +692,6 @@ static void command_ls(void) {
     console_write("CKLOS:/  <writable RAM disk>\n");
     if (vfs_count() == 0) {
         console_write("  <empty>\n");
-        return;
     }
     for (uint32_t index = 0; index < vfs_count(); index++) {
         const virtual_file *file = vfs_at(index);
@@ -700,6 +700,12 @@ static void command_ls(void) {
         console_write("  ");
         console_print_uint(file->size);
         console_write(file->read_only ? " bytes  [RO]\n" : " bytes  [RW]\n");
+    }
+    if (fs2_available()) {
+        console_printf("\nCKLOSFS2 %s\n", fs2_get_cwd());
+        if (fs2_list(".", fs2_list_item) != 0) {
+            console_write("  <cannot list current FS2 directory>\n");
+        }
     }
 }
 

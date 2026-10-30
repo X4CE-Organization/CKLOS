@@ -231,9 +231,9 @@ if [ "$status" -ne 33 ] && [ "$status" -ne 0 ]; then
 fi
 
 for expected in \
-    'CKLOS 0.17.0 kernel is running' \
+    'CKLOS 0.17.1 kernel is running' \
     'CKLOS>' \
-    'OS        CKLOS 0.17.0' \
+    'OS        CKLOS 0.17.1' \
     'PIT 100 Hz' \
     'Uptime' \
     'Heap allocator: PASS' \
@@ -485,7 +485,9 @@ set +e
     sleep 1
     printf '\021'
     sleep 2
-    printf 'fscat /home/cklos/cki-created.txt\r'
+    printf 'ls\r'
+    sleep 0.3
+    printf 'fscat cki-created.txt\r'
     sleep 0.3
     printf 'disk\r'
     sleep 0.3
@@ -535,6 +537,7 @@ for expected in \
     'renamed.bin  32768 bytes' \
     '你好' \
     'CKI: saved /home/cklos/cki-created.txt (15 bytes).' \
+    '[FILE] cki-created.txt  15 bytes' \
     'created in cki' \
     '你好 CKLOS editor'
 do
